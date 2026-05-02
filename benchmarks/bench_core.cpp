@@ -238,6 +238,26 @@ BENCHMARK(BM_HexEncode_SimdText)->Arg(1024)->Arg(65536)->Arg(1<<20)->Arg(1<<24);
 BENCHMARK(BM_HexEncode_ScalarSprintf)->Arg(1024)->Arg(65536)->Arg(1<<20)->Arg(1<<24);
 
 // ═══════════════════════════════════════════════════════════
+//  HEX DECODE
+// ═══════════════════════════════════════════════════════════
+
+static void BM_HexDecode_SimdText(benchmark::State& state) {
+    const size_t size = state.range(0);
+    // Encode first to get hex string
+    std::string raw(size, 'A');
+    auto span = std::span<const std::byte>(
+        reinterpret_cast<const std::byte*>(raw.data()), raw.size());
+    std::string hex_str = simdtext::hex_encode(span);
+    for (auto _ : state) {
+        auto result = simdtext::hex_decode(hex_str);
+        benchmark::DoNotOptimize(result.data());
+    }
+    state.SetBytesProcessed(state.iterations() * size);
+}
+
+BENCHMARK(BM_HexDecode_SimdText)->Arg(1024)->Arg(65536)->Arg(1<<20)->Arg(1<<24);
+
+// ═══════════════════════════════════════════════════════════
 //  BASE64 ENCODE
 // ═══════════════════════════════════════════════════════════
 
