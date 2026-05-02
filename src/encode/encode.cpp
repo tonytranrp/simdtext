@@ -153,6 +153,11 @@ static constexpr std::array<uint8_t, 256> base64_table = {
 size_t base64_encode_to_hwym(const uint8_t* src, size_t src_size, char* dst);
 #endif
 
+#ifdef __AVX2__
+// Forward declaration — implementation in src/detail/simd_avx2.cpp
+DecodeResult base64_decode_avx2(const uint8_t* src, size_t src_size, uint8_t* dst) noexcept;
+#endif
+
 size_t base64_encode_to(std::span<const std::byte> input, std::span<char> output) {
     const size_t required = 4 * ((input.size() + 2) / 3);
     if (output.size() < required) return 0;
@@ -218,6 +223,47 @@ DecodeResult base64_decode_to(std::string_view input, std::span<std::byte> outpu
 
     auto* SIMDTEXT_RESTRICT dst = reinterpret_cast<uint8_t*>(output.data());
     const auto* SIMDTEXT_RESTRICT src = reinterpret_cast<const uint8_t*>(input.data());
+
+#ifdef __AVX2__
+    // Use AVX2 for bulk decode, fall back to scalar for tail/padding
+    if (input.size() >= 32) {
+        // Process all full 32-byte chunks via AVX2, but leave the last
+        // chunk (which may have padding) for scalar if there's padding.
+        size_t avx2_end = input.size();
+        if (padding > 0) avx2_end -= 4;  // Leave last chunk for scalar
+        avx2_end = avx2_end & ~size_t(31);  // Round down to 32-byte boundary
+
+        if (avx2_end >= 32) {
+            DecodeResult avx2_result = base64_decode_avx2(src, avx2_end, dst);
+            if (!avx2_result.ok()) return avx2_result;
+            size_t j = avx2_result.bytes_written;
+
+            // Handle remaining bytes (after AVX2 chunk, before potential padding chunk)
+            size_t remaining_start = avx2_end;
+            for (size_t ii = remaining_start; ii + 4 <= input.size(); ii += 4) {
+                const uint8_t a = base64_table[src[ii]];
+                const uint8_t b = base64_table[src[ii+1]];
+                const uint8_t c = base64_table[src[ii+2]];
+                const uint8_t d = base64_table[src[ii+3]];
+                if (a == 64 || b == 64) {
+                    result.error = ErrorCode::InvalidChar;
+                    result.error_offset = (a == 64) ? ii : ii + 1;
+                    return result;
+                }
+                const uint32_t n = (static_cast<uint32_t>(a) << 18) |
+                                   (static_cast<uint32_t>(b) << 12) |
+                                   (static_cast<uint32_t>(c) << 6) |
+                                   static_cast<uint32_t>(d);
+                dst[j++] = static_cast<uint8_t>((n >> 16) & 0xFF);
+                if (src[ii+2] != '=') dst[j++] = static_cast<uint8_t>((n >> 8) & 0xFF);
+                if (src[ii+3] != '=') dst[j++] = static_cast<uint8_t>(n & 0xFF);
+            }
+            result.bytes_written = j;
+            return result;
+        }
+    }
+#endif
+
     size_t j = 0;
     const size_t chunks = input.size() / 4;
 

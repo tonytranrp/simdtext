@@ -4,6 +4,7 @@
 
 #include "hwy/highway.h"
 #include <immintrin.h>
+#include <cstring>
 
 namespace simdtext {
 
@@ -799,6 +800,182 @@ size_t hex_encode_simd(const uint8_t* src, size_t src_size, char* dst) {
         dst[i * 2 + 1] = hex_chars[src[i] & 0x0F];
     }
     return src_size * 2;
+}
+
+// ── SIMD URL Decode ──────────────────────────────────────────
+// Approach: scan for '%' and '+' characters using SIMD byte comparison.
+// For runs of plain bytes between special chars, memcpy them to output.
+// For %XX sequences, decode hex pair and write one byte.
+// The SIMD acceleration is in the fast scanning/copying of literal runs
+// and the hex nibble decode via TableLookupBytes.
+
+namespace {
+
+// Hex nibble lookup table for SIMD: 0xFF for invalid, 0-15 for valid hex
+alignas(64) static constexpr uint8_t hex_nib_lut[256] = {
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+       0,   1,   2,   3,   4,   5,   6,   7,   8,   9,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+    0xFF,  10,  11,  12,  13,  14,  15,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+    0xFF,  10,  11,  12,  13,  14,  15,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+};
+
+// Scalar hex decode helper (hot path, keep inline)
+static inline int8_t hex_nib(uint8_t c) {
+    return static_cast<int8_t>(hex_nib_lut[c]);
+}
+
+} // anonymous namespace
+
+size_t url_decode_to_hwy(const uint8_t* src, size_t src_size, char* dst_raw, size_t dst_size) {
+    const hn::ScalableTag<uint8_t> d;
+    const size_t N = hn::Lanes(d);
+    auto* dst = reinterpret_cast<uint8_t*>(dst_raw);
+
+    const auto vPercent = hn::Set(d, uint8_t('%'));
+    const auto vPlus    = hn::Set(d, uint8_t('+'));
+
+    size_t i = 0; // input position
+    size_t j = 0; // output position
+
+    while (i < src_size) {
+        // Use SIMD to find next '%' or '+' from position i
+        size_t found = src_size; // position of next special char
+        {
+            size_t si = i;
+            // Align-ish scan for special chars
+            for (; si + N <= src_size; si += N) {
+                const auto v = hn::LoadU(d, src + si);
+                const auto is_pct = hn::Eq(v, vPercent);
+                const auto is_plus = hn::Eq(v, vPlus);
+                const auto special = hn::Or(is_pct, is_plus);
+                if (!hn::AllTrue(d, hn::Not(special))) {
+                    // Found at least one special char in this vector
+                    const intptr_t lane = hn::FindFirstTrue(d, special);
+                    found = si + static_cast<size_t>(lane);
+                    break;
+                }
+            }
+            // Scalar tail for the scan
+            if (found == src_size) {
+                for (; si < src_size; ++si) {
+                    if (src[si] == '%' || src[si] == '+') { found = si; break; }
+                }
+            }
+        }
+
+        // Copy literal run [i, found) to output
+        if (found > i) {
+            const size_t len = found - i;
+            if (j + len > dst_size) return 0;
+            std::memcpy(dst + j, src + i, len);
+            j += len;
+            i = found;
+        }
+
+        if (i >= src_size) break;
+
+        // Process the special character at position i
+        if (src[i] == '%' && i + 2 < src_size) {
+            const int8_t hi = hex_nib(src[i + 1]);
+            const int8_t lo = hex_nib(src[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                if (j >= dst_size) return 0;
+                dst[j++] = static_cast<uint8_t>((hi << 4) | lo);
+                i += 3;
+                continue;
+            }
+            // Invalid hex after % — treat as literal
+            if (j >= dst_size) return 0;
+            dst[j++] = src[i++];
+        } else if (src[i] == '+') {
+            if (j >= dst_size) return 0;
+            dst[j++] = ' ';
+            ++i;
+        } else {
+            if (j >= dst_size) return 0;
+            dst[j++] = src[i++];
+        }
+    }
+
+    return j;
+}
+
+std::string url_decode_hwy(const uint8_t* src, size_t src_size) {
+    const hn::ScalableTag<uint8_t> d;
+    const size_t N = hn::Lanes(d);
+
+    const auto vPercent = hn::Set(d, uint8_t('%'));
+    const auto vPlus    = hn::Set(d, uint8_t('+'));
+
+    // Output is at most src_size bytes
+    std::string result(src_size, '\0');
+    auto* dst = reinterpret_cast<uint8_t*>(result.data());
+
+    size_t i = 0;
+    size_t j = 0;
+
+    while (i < src_size) {
+        // Use SIMD to find next '%' or '+' from position i
+        size_t found = src_size;
+        {
+            size_t si = i;
+            for (; si + N <= src_size; si += N) {
+                const auto v = hn::LoadU(d, src + si);
+                const auto special = hn::Or(hn::Eq(v, vPercent), hn::Eq(v, vPlus));
+                if (!hn::AllTrue(d, hn::Not(special))) {
+                    const intptr_t lane = hn::FindFirstTrue(d, special);
+                    found = si + static_cast<size_t>(lane);
+                    break;
+                }
+            }
+            if (found == src_size) {
+                for (; si < src_size; ++si) {
+                    if (src[si] == '%' || src[si] == '+') { found = si; break; }
+                }
+            }
+        }
+
+        // Copy literal run
+        if (found > i) {
+            std::memcpy(dst + j, src + i, found - i);
+            j += found - i;
+            i = found;
+        }
+
+        if (i >= src_size) break;
+
+        // Process special character
+        if (src[i] == '%' && i + 2 < src_size) {
+            const int8_t hi = hex_nib(src[i + 1]);
+            const int8_t lo = hex_nib(src[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                dst[j++] = static_cast<uint8_t>((hi << 4) | lo);
+                i += 3;
+                continue;
+            }
+            dst[j++] = src[i++];
+        } else if (src[i] == '+') {
+            dst[j++] = ' ';
+            ++i;
+        } else {
+            dst[j++] = src[i++];
+        }
+    }
+
+    result.resize(j);
+    return result;
 }
 
 } // namespace simdtext

@@ -8,6 +8,8 @@ namespace simdtext {
 // Forward declarations — implementations in src/highway/simd_hwy.cpp
 size_t url_encode_to_hwy(const uint8_t* src, size_t src_size, char* dst, size_t dst_size);
 std::string url_encode_hwy(const uint8_t* src, size_t src_size);
+size_t url_decode_to_hwy(const uint8_t* src, size_t src_size, char* dst, size_t dst_size);
+std::string url_decode_hwy(const uint8_t* src, size_t src_size);
 #endif
 
 // ── URL-safe lookup table (branchless classify) ────────────
@@ -106,6 +108,12 @@ std::string url_encode(std::string_view input) {
 }
 
 size_t url_decode_to(std::string_view input, std::span<char> output) noexcept {
+#ifdef SIMDTEXT_HAVE_HWY
+    if (input.size() >= 64) {
+        return url_decode_to_hwy(reinterpret_cast<const uint8_t*>(input.data()),
+                                  input.size(), output.data(), output.size());
+    }
+#endif
     const auto* SIMDTEXT_RESTRICT src = reinterpret_cast<const uint8_t*>(input.data());
     auto* SIMDTEXT_RESTRICT dst = output.data();
     size_t j = 0;
@@ -133,6 +141,11 @@ size_t url_decode_to(std::string_view input, std::span<char> output) noexcept {
 }
 
 std::string url_decode(std::string_view input) {
+#ifdef SIMDTEXT_HAVE_HWY
+    if (input.size() >= 64) {
+        return url_decode_hwy(reinterpret_cast<const uint8_t*>(input.data()), input.size());
+    }
+#endif
     std::string result;
     result.reserve(input.size());
     const auto* src = reinterpret_cast<const uint8_t*>(input.data());
