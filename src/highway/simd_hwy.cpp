@@ -3,6 +3,7 @@
 #ifdef SIMDTEXT_HAVE_HWY
 
 #include "hwy/highway.h"
+#include <immintrin.h>
 
 namespace simdtext {
 
@@ -711,36 +712,80 @@ std::string url_encode_hwy(const uint8_t* src, size_t src_size) {
     return result;
 }
 
-size_t hex_encode_simd(const uint8_t* src, size_t src_size, char* dst) {
-    // Fixed-width SIMD for deterministic interleave tables.
-    // SSE2 (16 lanes) is always available on x86-64 with Highway.
-    const hn::FixedTag<uint8_t, 16> d;
-    constexpr size_t N = 16;
-
-    // Hex lookup table — 16 bytes, perfect for one pshufb
-    alignas(16) static constexpr uint8_t hex_lut[16] = {
+// SSSE3-accelerated hex_encode using pshufb — compiled with target attribute
+// so the rest of the TU stays at baseline. GCC/Clang both support this.
+#if defined(__GNUC__) && defined(__x86_64__)
+__attribute__((target("ssse3")))
+#endif
+static size_t hex_encode_ssse3(const uint8_t* src, size_t src_size, char* dst) {
+    alignas(16) static const uint8_t hex_lut[16] = {
         '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'
     };
-    alignas(16) static constexpr char hex_chars_scalar[16] = {
+    alignas(16) static const uint8_t lo_mask_arr[16] = {0x0F};
+    static constexpr char hex_chars[16] = {
         '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'
     };
 
-    const auto v0x0F = hn::Set(d, uint8_t(0x0F));
-    const auto lut = hn::LoadU(d, hex_lut);
+    const __m128i lut    = _mm_load_si128(reinterpret_cast<const __m128i*>(hex_lut));
+    const __m128i mask0F = _mm_load_si128(reinterpret_cast<const __m128i*>(lo_mask_arr));
 
     size_t i = 0;
-    // Process 16 input bytes → 32 output bytes per iteration
+    for (; i + 16 <= src_size; i += 16) {
+        const __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i));
+
+        // Nibble extraction: psrlw shifts 16-bit words, mask cleans odd bytes
+        const __m128i hi_nibbles = _mm_and_si128(_mm_srli_epi16(v, 4), mask0F);
+        const __m128i lo_nibbles = _mm_and_si128(v, mask0F);
+
+        // pshufb: lookup each nibble in the hex table
+        const __m128i hi_hex = _mm_shuffle_epi8(lut, hi_nibbles);
+        const __m128i lo_hex = _mm_shuffle_epi8(lut, lo_nibbles);
+
+        // Interleave: punpcklbw/hbw produces [hi0,lo0,...,hi7,lo7] and [hi8,lo8,...,hi15,lo15]
+        const __m128i out_lo = _mm_unpacklo_epi8(hi_hex, lo_hex);
+        const __m128i out_hi = _mm_unpackhi_epi8(hi_hex, lo_hex);
+
+        const size_t j = i * 2;
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + j), out_lo);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + j + 16), out_hi);
+    }
+
+    for (; i < src_size; ++i) {
+        dst[i * 2]     = hex_chars[src[i] >> 4];
+        dst[i * 2 + 1] = hex_chars[src[i] & 0x0F];
+    }
+    return src_size * 2;
+}
+
+size_t hex_encode_simd(const uint8_t* src, size_t src_size, char* dst) {
+    static constexpr char hex_chars[16] = {
+        '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'
+    };
+
+#if defined(__x86_64__) && defined(__GNUC__)
+    // Runtime dispatch: SSSE3 is available on all x86-64 CPUs since ~2008
+    if (__builtin_cpu_supports("ssse3")) {
+        return hex_encode_ssse3(src, src_size, dst);
+    }
+#endif
+
+    // SSE2 fallback (Highway)
+    const hn::FixedTag<uint8_t, 16> d;
+    constexpr size_t N = 16;
+    alignas(16) static constexpr uint8_t hex_lut_hwy[16] = {
+        '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'
+    };
+    const auto v0x0F = hn::Set(d, uint8_t(0x0F));
+    const auto lut_v = hn::LoadU(d, hex_lut_hwy);
+
+    size_t i = 0;
     for (; i + N <= src_size; i += N) {
         const auto v = hn::LoadU(d, src + i);
         const auto hi_nibbles = hn::ShiftRight<4>(v);
         const auto lo_nibbles = hn::And(v, v0x0F);
-        const auto hi_hex = hn::TableLookupBytes(lut, hi_nibbles);
-        const auto lo_hex = hn::TableLookupBytes(lut, lo_nibbles);
+        const auto hi_hex = hn::TableLookupBytes(lut_v, hi_nibbles);
+        const auto lo_hex = hn::TableLookupBytes(lut_v, lo_nibbles);
 
-        // Interleave hi/lo hex characters using SIMD unpack instructions.
-        // InterleaveLower/Upper (punpcklbw/punpckhbw) produce:
-        //   out_lo = [hi0,lo0, hi1,lo1, ..., hi7,lo7]
-        //   out_hi = [hi8,lo8, hi9,lo9, ..., hi15,lo15]
         const auto out_lo = hn::InterleaveLower(d, hi_hex, lo_hex);
         const auto out_hi = hn::InterleaveUpper(d, hi_hex, lo_hex);
 
@@ -749,12 +794,10 @@ size_t hex_encode_simd(const uint8_t* src, size_t src_size, char* dst) {
         hn::StoreU(out_hi, d, reinterpret_cast<uint8_t*>(dst + j + N));
     }
 
-    // Scalar tail
     for (; i < src_size; ++i) {
-        dst[i * 2]     = hex_chars_scalar[src[i] >> 4];
-        dst[i * 2 + 1] = hex_chars_scalar[src[i] & 0x0F];
+        dst[i * 2]     = hex_chars[src[i] >> 4];
+        dst[i * 2 + 1] = hex_chars[src[i] & 0x0F];
     }
-
     return src_size * 2;
 }
 
