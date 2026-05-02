@@ -22,3 +22,4 @@
 #include "simdtext/str.hpp"
 #include "simdtext/json.hpp"
 #include "simdtext/csv.hpp"
+#include "simdtext/diff.hpp"
