@@ -19,4 +19,7 @@ const CpuFeatures& detect_cpu();
 /// UTF-8 validation dispatch (selects best available implementation).
 bool validate_utf8_dispatch(const char* data, size_t size);
 
+/// Count code points dispatch (selects best available implementation).
+size_t count_code_points_dispatch(const char* data, size_t size);
+
 } // namespace simdtext::detail

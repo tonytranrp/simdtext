@@ -234,15 +234,8 @@ bool Utf8Validator::finalize() noexcept {
 }
 
 size_t count_code_points(std::string_view input) noexcept {
-    // Count bytes that are NOT continuation bytes (10xxxxxx)
-    // Each such byte starts a new code point
-    size_t count = 0;
-    for (char c : input) {
-        if ((static_cast<uint8_t>(c) & 0xC0) != 0x80) {
-            count++;
-        }
-    }
-    return count;
+    if (input.empty()) return 0;
+    return detail::count_code_points_dispatch(input.data(), input.size());
 }
 
 size_t utf8_length(std::string_view input) noexcept {

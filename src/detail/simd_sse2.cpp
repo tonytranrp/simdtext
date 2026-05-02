@@ -351,6 +351,55 @@ bool validate_utf8(const char* data, size_t size) {
     return expected_cont == 0;
 }
 
+
+// ── SIMD count_code_points ─────────────────────────────────────
+// Count Unicode code points = count bytes that are NOT continuation bytes (10xxxxxx)
+
+size_t count_code_points(const char* data, size_t size) {
+    const __m128i v80 = _mm_set1_epi8(static_cast<char>(0x80));
+
+    size_t i = 0;
+    size_t count = 0;
+
+    // Process 64 bytes at a time (4x unrolled)
+    for (; i + 64 <= size; i += 64) {
+        __m128i c0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i));
+        __m128i c1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i + 16));
+        __m128i c2 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i + 32));
+        __m128i c3 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i + 48));
+
+        // Continuation byte: 0x80 <= byte <= 0xBF
+        __m128i m0 = _mm_and_si128(_mm_cmpgt_epi8(c0, v80), _mm_cmplt_epi8(c0, _mm_set1_epi8(static_cast<char>(0xC0))));
+        __m128i m1 = _mm_and_si128(_mm_cmpgt_epi8(c1, v80), _mm_cmplt_epi8(c1, _mm_set1_epi8(static_cast<char>(0xC0))));
+        __m128i m2 = _mm_and_si128(_mm_cmpgt_epi8(c2, v80), _mm_cmplt_epi8(c2, _mm_set1_epi8(static_cast<char>(0xC0))));
+        __m128i m3 = _mm_and_si128(_mm_cmpgt_epi8(c3, v80), _mm_cmplt_epi8(c3, _mm_set1_epi8(static_cast<char>(0xC0))));
+
+        // Non-continuation count = 64 - continuation_count
+        uint32_t mask0 = _mm_movemask_epi8(m0);
+        uint32_t mask1 = _mm_movemask_epi8(m1);
+        uint32_t mask2 = _mm_movemask_epi8(m2);
+        uint32_t mask3 = _mm_movemask_epi8(m3);
+
+        count += 64 - __builtin_popcount(mask0) - __builtin_popcount(mask1)
+                    - __builtin_popcount(mask2) - __builtin_popcount(mask3);
+    }
+
+    // Process 16 bytes at a time
+    for (; i + 16 <= size; i += 16) {
+        __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i));
+        __m128i m = _mm_and_si128(_mm_cmpgt_epi8(chunk, v80), _mm_cmplt_epi8(chunk, _mm_set1_epi8(static_cast<char>(0xC0))));
+        uint32_t mask = _mm_movemask_epi8(m);
+        count += 16 - __builtin_popcount(mask);
+    }
+
+    // Scalar tail
+    for (; i < size; ++i) {
+        if ((static_cast<uint8_t>(data[i]) & 0xC0) != 0x80) ++count;
+    }
+
+    return count;
+}
+
 } // namespace simdtext::detail::sse2
 
 #if defined(__GNUC__) || defined(__clang__)

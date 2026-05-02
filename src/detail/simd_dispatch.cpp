@@ -22,6 +22,7 @@ void lowercase_ascii(char* data, size_t size);
 void uppercase_ascii(char* data, size_t size);
 const char* find_byte(const char* data, size_t size, char byte);
 bool validate_utf8(const char* data, size_t size);
+size_t count_code_points(const char* data, size_t size);
 }
 
 namespace avx2 {
@@ -136,6 +137,19 @@ bool validate_utf8_dispatch(const char* data, size_t size) {
     if (f.sse2)    return sse2::validate_utf8(data, size);
 #endif
     return scalar::validate_utf8(data, size);
+}
+
+size_t count_code_points_dispatch(const char* data, size_t size) {
+    const auto& f = detect_cpu();
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    if (f.sse2)    return sse2::count_code_points(data, size);
+#endif
+    // Scalar fallback
+    size_t count = 0;
+    for (size_t i = 0; i < size; ++i) {
+        if ((static_cast<unsigned char>(data[i]) & 0xC0) != 0x80) ++count;
+    }
+    return count;
 }
 
 } // namespace simdtext::detail
