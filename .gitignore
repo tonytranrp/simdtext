@@ -30,3 +30,25 @@
 *.exe
 *.out
 *.app
+# Build
+build/
+cmake-build-*/
+
+# Dependencies
+deps/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Compiled
+*.o
+*.a
+*.so
+*.out
