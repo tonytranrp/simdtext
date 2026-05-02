@@ -396,6 +396,50 @@ bool validate_utf8(const char* data, size_t size) {
     return expected_cont == 0;
 }
 
+
+// ── AVX2 count_code_points ──────────────────────────────────────
+
+size_t count_code_points(const char* data, size_t size) {
+    const __m256i v80 = _mm256_set1_epi8(static_cast<char>(0x80));
+
+    size_t i = 0;
+    size_t count = 0;
+
+    // Process 128 bytes at a time (4x unrolled)
+    for (; i + 128 <= size; i += 128) {
+        __m256i c0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i));
+        __m256i c1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i + 32));
+        __m256i c2 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i + 64));
+        __m256i c3 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i + 96));
+
+        __m256i m0 = _mm256_and_si256(_mm256_cmpgt_epi8(c0, v80), _mm256_cmpgt_epi8(_mm256_set1_epi8(static_cast<char>(0xC0)), c0));
+        __m256i m1 = _mm256_and_si256(_mm256_cmpgt_epi8(c1, v80), _mm256_cmpgt_epi8(_mm256_set1_epi8(static_cast<char>(0xC0)), c1));
+        __m256i m2 = _mm256_and_si256(_mm256_cmpgt_epi8(c2, v80), _mm256_cmpgt_epi8(_mm256_set1_epi8(static_cast<char>(0xC0)), c2));
+        __m256i m3 = _mm256_and_si256(_mm256_cmpgt_epi8(c3, v80), _mm256_cmpgt_epi8(_mm256_set1_epi8(static_cast<char>(0xC0)), c3));
+
+        uint32_t mask0 = _mm256_movemask_epi8(m0);
+        uint32_t mask1 = _mm256_movemask_epi8(m1);
+        uint32_t mask2 = _mm256_movemask_epi8(m2);
+        uint32_t mask3 = _mm256_movemask_epi8(m3);
+
+        count += 128 - __builtin_popcount(mask0) - __builtin_popcount(mask1)
+                     - __builtin_popcount(mask2) - __builtin_popcount(mask3);
+    }
+
+    for (; i + 32 <= size; i += 32) {
+        __m256i chunk = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i));
+        __m256i m = _mm256_and_si256(_mm256_cmpgt_epi8(chunk, v80), _mm256_cmpgt_epi8(_mm256_set1_epi8(static_cast<char>(0xC0)), chunk));
+        uint32_t mask = _mm256_movemask_epi8(m);
+        count += 32 - __builtin_popcount(mask);
+    }
+
+    for (; i < size; ++i) {
+        if ((static_cast<uint8_t>(data[i]) & 0xC0) != 0x80) ++count;
+    }
+
+    return count;
+}
+
 } // namespace simdtext::detail::avx2
 
 #if defined(__GNUC__) || defined(__clang__)
