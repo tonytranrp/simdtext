@@ -31,7 +31,6 @@ std::string_view trim(std::string_view s) noexcept {
 
 std::string replace_all(std::string_view input, char needle, char replacement) {
     std::string result(input);
-    const char* end = find_byte(std::span<const char>{result.data(), result.size()}, needle);
     // Use SIMD find_byte to skip to each occurrence
     for (size_t i = 0; i < result.size(); ) {
         const char* found = find_byte(std::span<const char>{result.data() + i, result.size() - i}, needle);

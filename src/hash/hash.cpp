@@ -211,7 +211,7 @@ uint64_t wyhash(std::string_view data) noexcept {
     constexpr uint64_t P0 = 0xA0761D6478BD642FULL;
     constexpr uint64_t P1 = 0xE7037ED1A0B428DBULL;
     constexpr uint64_t P2 = 0x8EBD8583D0F5D0CDULL;
-    constexpr uint64_t P3 = 0x58B3DF9AF2C07C43ULL;
+    // P3 not used in this implementation
 
     auto wymix = [](uint64_t a, uint64_t b) -> uint64_t {
         __uint128_t r = static_cast<__uint128_t>(a) * b;
@@ -223,10 +223,6 @@ uint64_t wyhash(std::string_view data) noexcept {
     };
     auto r4 = [](const uint8_t* p) -> uint32_t {
         uint32_t v; __builtin_memcpy(&v, p, 4); return v;
-    };
-    auto r3 = [](const uint8_t* p) -> uint32_t {
-        return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
-               (static_cast<uint32_t>(p[2]) << 16);
     };
 
     uint64_t seed = 0;

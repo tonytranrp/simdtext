@@ -88,7 +88,7 @@ void CsvParser::reset(std::string_view input) noexcept {
 size_t parse_csv_row(std::string_view line, std::vector<std::string_view>& fields,
     char delimiter, char quote) {
     CsvParser parser(line, {delimiter, quote, true});
-    parser.next_row();
+    (void)parser.next_row();
     fields = parser.fields();
     return fields.size();
 }

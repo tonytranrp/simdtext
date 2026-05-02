@@ -45,7 +45,7 @@ debug = true
     {
         const char* ini = "[app]\n";
         ConfigParser parser(ini);
-        parser.parse();
+        (void)parser.parse();
         CHECK_EQ(parser.get("app", "missing", "default"), std::string_view("default"));
     }
 
@@ -59,7 +59,7 @@ debug = true
     {
         const char* ini = "[s]\nk=v\n";
         ConfigParser parser(ini);
-        parser.parse();
+        (void)parser.parse();
         CHECK_EQ(parser.entry(0).section, std::string_view("s"));
         CHECK_EQ(parser.entry(0).key, std::string_view("k"));
         CHECK_EQ(parser.entry(0).value, std::string_view("v"));

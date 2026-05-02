@@ -45,7 +45,7 @@ LogEntry parse_log_line(std::string_view line, size_t line_number, size_t byte_o
         static constexpr std::string_view levels[] = {"TRACE", "DEBUG", "INFO", "WARN", "WARNING", "ERROR", "FATAL",
                                                        "trace", "debug", "info", "warn", "warning", "error", "fatal"};
         size_t found_pos = line.size();
-        size_t found_len = 0;
+        size_t found_len = 0; (void)found_len;
         for (auto lv : levels) {
             size_t idx = line.find(lv, pos);
             if (idx != std::string_view::npos && idx < found_pos) {
@@ -107,7 +107,7 @@ LogCounts count_log_levels(std::string_view text) {
 
 std::vector<std::string_view> filter_log_lines(std::string_view text, LogLevel min_level) {
     std::vector<std::string_view> result;
-    static const LogLevel levels[] = {
+    static const LogLevel levels[] __attribute__((unused)) = {
         LogLevel::Trace, LogLevel::Debug, LogLevel::Info,
         LogLevel::Warn, LogLevel::Error, LogLevel::Fatal
     };

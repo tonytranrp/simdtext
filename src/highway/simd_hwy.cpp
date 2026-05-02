@@ -712,13 +712,16 @@ std::string url_encode_hwy(const uint8_t* src, size_t src_size) {
 }
 
 size_t hex_encode_simd(const uint8_t* src, size_t src_size, char* dst) {
-    const hn::ScalableTag<uint8_t> d;
-    const size_t N = hn::Lanes(d);
+    // Fixed-width SIMD for deterministic interleave tables.
+    // SSE2 (16 lanes) is always available on x86-64 with Highway.
+    const hn::FixedTag<uint8_t, 16> d;
+    constexpr size_t N = 16;
 
-    alignas(64) static constexpr uint8_t hex_lut[16] = {
+    // Hex lookup table — 16 bytes, perfect for one pshufb
+    alignas(16) static constexpr uint8_t hex_lut[16] = {
         '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'
     };
-    alignas(64) static constexpr char hex_chars_scalar[16] = {
+    alignas(16) static constexpr char hex_chars_scalar[16] = {
         '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'
     };
 
@@ -726,8 +729,7 @@ size_t hex_encode_simd(const uint8_t* src, size_t src_size, char* dst) {
     const auto lut = hn::LoadU(d, hex_lut);
 
     size_t i = 0;
-    // Process N bytes at a time → 2N output bytes
-    // For each input byte, extract high+low nibble, lookup, interleave
+    // Process 16 input bytes → 32 output bytes per iteration
     for (; i + N <= src_size; i += N) {
         const auto v = hn::LoadU(d, src + i);
         const auto hi_nibbles = hn::ShiftRight<4>(v);
@@ -735,12 +737,16 @@ size_t hex_encode_simd(const uint8_t* src, size_t src_size, char* dst) {
         const auto hi_hex = hn::TableLookupBytes(lut, hi_nibbles);
         const auto lo_hex = hn::TableLookupBytes(lut, lo_nibbles);
 
-        // Interleave hi/lo into output: hi0,lo0, hi1,lo1, ...
+        // Interleave hi/lo hex characters using SIMD unpack instructions.
+        // InterleaveLower/Upper (punpcklbw/punpckhbw) produce:
+        //   out_lo = [hi0,lo0, hi1,lo1, ..., hi7,lo7]
+        //   out_hi = [hi8,lo8, hi9,lo9, ..., hi15,lo15]
+        const auto out_lo = hn::InterleaveLower(d, hi_hex, lo_hex);
+        const auto out_hi = hn::InterleaveUpper(d, hi_hex, lo_hex);
+
         const size_t j = i * 2;
-        for (size_t k = 0; k < N; ++k) {
-            dst[j + k * 2]     = static_cast<char>(hn::ExtractLane(hi_hex, k));
-            dst[j + k * 2 + 1] = static_cast<char>(hn::ExtractLane(lo_hex, k));
-        }
+        hn::StoreU(out_lo, d, reinterpret_cast<uint8_t*>(dst + j));
+        hn::StoreU(out_hi, d, reinterpret_cast<uint8_t*>(dst + j + N));
     }
 
     // Scalar tail

@@ -83,7 +83,7 @@ void test_json() {
         CHECK_EQ(tok.next().type, JsonType::ObjectOpen);
         auto key = tok.next();
         CHECK_EQ(key.value, std::string_view("\"name\""));
-        tok.next(); // colon
+        (void)tok.next(); // colon
         auto val = tok.next();
         CHECK_EQ(val.value, std::string_view("\"Alice\""));
     }
@@ -91,18 +91,18 @@ void test_json() {
     // Number values
     {
         JsonTokenizer tok(R"([42, -3.14, 1.5e+10])");
-        tok.next(); // [
+        (void)tok.next(); // [
         CHECK_EQ(tok.next().value, std::string_view("42"));
-        tok.next(); // ,
+        (void)tok.next(); // ,
         CHECK_EQ(tok.next().value, std::string_view("-3.14"));
-        tok.next(); // ,
+        (void)tok.next(); // ,
         CHECK_EQ(tok.next().value, std::string_view("1.5e+10"));
     }
 
     // False
     {
         JsonTokenizer tok(R"([false])");
-        tok.next(); // [
+        (void)tok.next(); // [
         CHECK_EQ(tok.next().type, JsonType::False);
     }
 
