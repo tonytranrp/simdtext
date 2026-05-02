@@ -103,34 +103,31 @@ std::string_view trim_ascii(std::string_view input) {
 // ── Lines & Splitting ──────────────────────────────────────
 
 LineView::Iterator::Iterator(std::string_view remaining)
-    : remaining_(remaining), line_() {
-    if (remaining.data() == nullptr) {
-        // Sentinel end iterator
-        return;
-    }
-    const auto pos = remaining.find('\n');
+    : line_(), remaining_(remaining), has_value_(!remaining.empty()) {
+    if (!has_value_) return;
+    advance();
+}
+
+void LineView::Iterator::advance() {
+    const auto pos = remaining_.find('\n');
     if (pos == std::string_view::npos) {
-        line_ = remaining;
+        line_ = remaining_;
+        has_value_ = true;
         remaining_ = {};
     } else {
-        line_ = remaining.substr(0, pos);
-        remaining_ = remaining.substr(pos + 1);
+        line_ = remaining_.substr(0, pos);
+        remaining_ = remaining_.substr(pos + 1);
+        has_value_ = true;
     }
 }
 
 LineView::Iterator& LineView::Iterator::operator++() {
-    if (remaining_.data() == nullptr) {
-        // Already at end — clear line_ to match end sentinel
+    if (remaining_.empty()) {
+        // No more data — become end sentinel
+        has_value_ = false;
         line_ = {};
     } else {
-        const auto pos = remaining_.find('\n');
-        if (pos == std::string_view::npos) {
-            line_ = remaining_;
-            remaining_ = {};
-        } else {
-            line_ = remaining_.substr(0, pos);
-            remaining_ = remaining_.substr(pos + 1);
-        }
+        advance();
     }
     return *this;
 }
@@ -146,32 +143,31 @@ LineView lines(std::string_view input) {
 }
 
 SplitView::Iterator::Iterator(std::string_view remaining, char delim)
-    : remaining_(remaining), delim_(delim), segment_() {
-    if (remaining.data() == nullptr) {
-        return;
-    }
-    const auto pos = remaining.find(delim_);
+    : segment_(), remaining_(remaining), delim_(delim), has_value_(!remaining.empty()) {
+    if (!has_value_) return;
+    advance();
+}
+
+void SplitView::Iterator::advance() {
+    const auto pos = remaining_.find(delim_);
     if (pos == std::string_view::npos) {
-        segment_ = remaining;
+        segment_ = remaining_;
+        has_value_ = true;
         remaining_ = {};
     } else {
-        segment_ = remaining.substr(0, pos);
-        remaining_ = remaining.substr(pos + 1);
+        segment_ = remaining_.substr(0, pos);
+        remaining_ = remaining_.substr(pos + 1);
+        has_value_ = true;
     }
 }
 
 SplitView::Iterator& SplitView::Iterator::operator++() {
-    if (remaining_.data() == nullptr) {
+    if (remaining_.empty()) {
+        // No more data — become end sentinel
+        has_value_ = false;
         segment_ = {};
     } else {
-        const auto pos = remaining_.find(delim_);
-        if (pos == std::string_view::npos) {
-            segment_ = remaining_;
-            remaining_ = {};
-        } else {
-            segment_ = remaining_.substr(0, pos);
-            remaining_ = remaining_.substr(pos + 1);
-        }
+        advance();
     }
     return *this;
 }
@@ -210,6 +206,7 @@ bool valid_utf8(std::span<const char> input) {
             if (p + 2 >= end || (*p & 0xC0) != 0x80 || (*(p+1) & 0xC0) != 0x80 || (*(p+2) & 0xC0) != 0x80) return false;
             if (byte == 0xF0 && *p < 0x90) return false;
             if (byte > 0xF4) return false;
+            if (byte == 0xF4 && *p > 0x8F) return false;  // > U+10FFFF
             p += 3;
         } else {
             return false;

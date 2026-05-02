@@ -22,7 +22,9 @@ public:
         using pointer = const std::string_view*;
         using reference = const std::string_view&;
 
-        Iterator() = default;
+        /// End sentinel constructor
+        Iterator() : line_(), remaining_(), has_value_(false) {}
+
         Iterator(std::string_view remaining);
 
         SIMDTEXT_NODISCARD reference operator*() const { return line_; }
@@ -32,16 +34,15 @@ public:
         Iterator operator++(int);
 
         SIMDTEXT_NODISCARD bool operator==(const Iterator& other) const {
-            return remaining_.data() == other.remaining_.data() &&
-                   remaining_.size() == other.remaining_.size() &&
-                   line_.data() == other.line_.data() &&
-                   line_.size() == other.line_.size();
+            return has_value_ == other.has_value_ && (!has_value_ || line_.data() == other.line_.data());
         }
         SIMDTEXT_NODISCARD bool operator!=(const Iterator& other) const { return !(*this == other); }
 
     private:
-        std::string_view remaining_;
         std::string_view line_;
+        std::string_view remaining_;
+        bool has_value_;  // true = we have a line to yield, false = end sentinel
+        void advance();
     };
 
     explicit LineView(std::string_view input) : input_(input) {}
@@ -67,7 +68,9 @@ public:
         using pointer = const std::string_view*;
         using reference = const std::string_view&;
 
-        Iterator() = default;
+        /// End sentinel constructor
+        Iterator() : segment_(), remaining_(), delim_('\0'), has_value_(false) {}
+
         Iterator(std::string_view remaining, char delim);
 
         SIMDTEXT_NODISCARD reference operator*() const { return segment_; }
@@ -77,17 +80,16 @@ public:
         Iterator operator++(int);
 
         SIMDTEXT_NODISCARD bool operator==(const Iterator& other) const {
-            return remaining_.data() == other.remaining_.data() &&
-                   remaining_.size() == other.remaining_.size() &&
-                   segment_.data() == other.segment_.data() &&
-                   segment_.size() == other.segment_.size();
+            return has_value_ == other.has_value_ && (!has_value_ || segment_.data() == other.segment_.data());
         }
         SIMDTEXT_NODISCARD bool operator!=(const Iterator& other) const { return !(*this == other); }
 
     private:
-        std::string_view remaining_;
         std::string_view segment_;
+        std::string_view remaining_;
         char delim_;
+        bool has_value_;  // true = we have a segment to yield, false = end sentinel
+        void advance();
     };
 
     SplitView(std::string_view input, char delim) : input_(input), delim_(delim) {}
