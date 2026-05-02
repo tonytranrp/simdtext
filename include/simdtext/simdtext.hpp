@@ -25,3 +25,4 @@
 #include <simdtext/diff.hpp>
 #include <simdtext/log.hpp>
 #include <simdtext/xml.hpp>
+#include <simdtext/markdown.hpp>

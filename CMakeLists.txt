@@ -139,6 +139,7 @@ set(SIMDTEXT_SOURCES
     src/diff/diff.cpp
     src/log/log.cpp
     src/xml/xml.cpp
+    src/markdown/markdown.cpp
     ${SIMDTEXT_INTRINSIC_SOURCES}
 )
 
@@ -270,6 +271,7 @@ if(SIMDTEXT_BUILD_TESTS)
         tests/test_diff.cpp
         tests/test_log.cpp
         tests/test_xml.cpp
+        tests/test_markdown.cpp
     )
     target_include_directories(test_simdtext PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_link_libraries(test_simdtext PRIVATE simdtext)
