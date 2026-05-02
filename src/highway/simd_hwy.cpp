@@ -444,6 +444,52 @@ bool valid_utf8(std::span<const char> input) {
     return validate_utf8_vec(d, ptr, input.size());
 }
 
+// ── SIMD Hex Encode ─────────────────────────────────────────────
+// Uses TableLookupBytes (pshufb) for nibble→hex lookup.
+// The hex table is only 16 bytes — fits perfectly in one pshufb call!
+// This is the perfect use case for SIMD since the table is small.
+
+size_t hex_encode_simd(const uint8_t* src, size_t src_size, char* dst) {
+    const hn::ScalableTag<uint8_t> d;
+    const size_t N = hn::Lanes(d);
+
+    alignas(64) static constexpr uint8_t hex_lut[16] = {
+        '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'
+    };
+    alignas(64) static constexpr char hex_chars_scalar[16] = {
+        '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'
+    };
+
+    const auto v0x0F = hn::Set(d, uint8_t(0x0F));
+    const auto lut = hn::LoadU(d, hex_lut);
+
+    size_t i = 0;
+    // Process N bytes at a time → 2N output bytes
+    // For each input byte, extract high+low nibble, lookup, interleave
+    for (; i + N <= src_size; i += N) {
+        const auto v = hn::LoadU(d, src + i);
+        const auto hi_nibbles = hn::ShiftRight<4>(v);
+        const auto lo_nibbles = hn::And(v, v0x0F);
+        const auto hi_hex = hn::TableLookupBytes(lut, hi_nibbles);
+        const auto lo_hex = hn::TableLookupBytes(lut, lo_nibbles);
+
+        // Interleave hi/lo into output: hi0,lo0, hi1,lo1, ...
+        const size_t j = i * 2;
+        for (size_t k = 0; k < N; ++k) {
+            dst[j + k * 2]     = static_cast<char>(hn::ExtractLane(hi_hex, k));
+            dst[j + k * 2 + 1] = static_cast<char>(hn::ExtractLane(lo_hex, k));
+        }
+    }
+
+    // Scalar tail
+    for (; i < src_size; ++i) {
+        dst[i * 2]     = hex_chars_scalar[src[i] >> 4];
+        dst[i * 2 + 1] = hex_chars_scalar[src[i] & 0x0F];
+    }
+
+    return src_size * 2;
+}
+
 } // namespace simdtext
 
 #else
