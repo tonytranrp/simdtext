@@ -75,6 +75,9 @@ BytePattern BytePattern::from_masked(std::span<const uint8_t> bytes, std::span<c
 
 namespace {
 
+// Pre-computed non-wildcard entries for fast verification
+struct FixedEntry { size_t offset; uint8_t byte; };
+
 const uint8_t* find_pattern_scalar(
     const uint8_t* SIMDTEXT_RESTRICT data, size_t length, const BytePattern& pattern) noexcept
 {
@@ -84,15 +87,21 @@ const uint8_t* find_pattern_scalar(
     const uint8_t* SIMDTEXT_RESTRICT const pat_bytes = pattern.bytes().data();
     const uint8_t* SIMDTEXT_RESTRICT const pat_mask = pattern.masks().data();
 
-    // Find first and last non-wildcard byte for fast reject
+    // Build compact list of non-wildcard positions for fast verification
+    // Avoids checking pat_mask[j] on every iteration
     size_t first_fixed = pat_len;
     size_t last_fixed = pat_len;
     uint8_t first_byte = 0;
     uint8_t last_byte = 0;
-    for (size_t j = 0; j < pat_len; ++j) {
+    // Fixed entries for verification (max 256 entries is enough for any reasonable pattern)
+    FixedEntry fixed[256];
+    size_t num_fixed = 0;
+
+    for (size_t j = 0; j < pat_len && num_fixed < 256; ++j) {
         if (pat_mask[j] != 0x00) {
             if (first_fixed == pat_len) { first_fixed = j; first_byte = pat_bytes[j]; }
             last_fixed = j; last_byte = pat_bytes[j];
+            fixed[num_fixed++] = {j, pat_bytes[j]};
         }
     }
 
@@ -107,9 +116,10 @@ const uint8_t* find_pattern_scalar(
         if (data[i + first_fixed] != first_byte) continue;
         if (last_fixed != first_fixed && data[i + last_fixed] != last_byte) continue;
 
+        // Compact verification — no mask check needed
         bool match = true;
-        for (size_t j = 0; j < pat_len; ++j) {
-            if (pat_mask[j] != 0x00 && data[i + j] != pat_bytes[j]) {
+        for (size_t k = 0; k < num_fixed; ++k) {
+            if (data[i + fixed[k].offset] != fixed[k].byte) {
                 match = false;
                 break;
             }
@@ -132,14 +142,15 @@ const uint8_t* find_pattern_sse2(
     const uint8_t* const pat_bytes = pattern.bytes().data();
     const uint8_t* const pat_mask = pattern.masks().data();
 
-    // Find first non-wildcard byte
+    // Build compact list of non-wildcard positions
+    FixedEntry fixed[256];
+    size_t num_fixed = 0;
     size_t first_fixed = pat_len;
     uint8_t first_byte = 0;
-    for (size_t j = 0; j < pat_len; ++j) {
+    for (size_t j = 0; j < pat_len && num_fixed < 256; ++j) {
         if (pat_mask[j] != 0x00) {
-            first_fixed = j;
-            first_byte = pat_bytes[j];
-            break;
+            if (first_fixed == pat_len) { first_fixed = j; first_byte = pat_bytes[j]; }
+            fixed[num_fixed++] = {j, pat_bytes[j]};
         }
     }
     if (first_fixed == pat_len) return data;
@@ -162,8 +173,8 @@ const uint8_t* find_pattern_sse2(
                 if (candidate >= scan_limit) break;
 
                 bool match = true;
-                for (size_t j = 0; j < pat_len; ++j) {
-                    if (pat_mask[j] != 0x00 && data[candidate + j] != pat_bytes[j]) {
+                for (size_t k = 0; k < num_fixed; ++k) {
+                    if (data[candidate + fixed[k].offset] != fixed[k].byte) {
                         match = false;
                         break;
                     }
@@ -177,8 +188,8 @@ const uint8_t* find_pattern_sse2(
     for (; i < scan_limit; ++i) {
         if (data[i + first_fixed] != first_byte) continue;
         bool match = true;
-        for (size_t j = 0; j < pat_len; ++j) {
-            if (pat_mask[j] != 0x00 && data[i + j] != pat_bytes[j]) {
+        for (size_t k = 0; k < num_fixed; ++k) {
+            if (data[i + fixed[k].offset] != fixed[k].byte) {
                 match = false;
                 break;
             }
@@ -202,14 +213,15 @@ const uint8_t* find_pattern_avx2(
     const uint8_t* const pat_bytes = pattern.bytes().data();
     const uint8_t* const pat_mask = pattern.masks().data();
 
-    // Find first non-wildcard byte
+    // Build compact list of non-wildcard positions
+    FixedEntry fixed[256];
+    size_t num_fixed = 0;
     size_t first_fixed = pat_len;
     uint8_t first_byte = 0;
-    for (size_t j = 0; j < pat_len; ++j) {
+    for (size_t j = 0; j < pat_len && num_fixed < 256; ++j) {
         if (pat_mask[j] != 0x00) {
-            first_fixed = j;
-            first_byte = pat_bytes[j];
-            break;
+            if (first_fixed == pat_len) { first_fixed = j; first_byte = pat_bytes[j]; }
+            fixed[num_fixed++] = {j, pat_bytes[j]};
         }
     }
     if (first_fixed == pat_len) return data;
@@ -231,8 +243,8 @@ const uint8_t* find_pattern_avx2(
                 if (candidate >= scan_limit) break;
 
                 bool match = true;
-                for (size_t j = 0; j < pat_len; ++j) {
-                    if (pat_mask[j] != 0x00 && data[candidate + j] != pat_bytes[j]) {
+                for (size_t k = 0; k < num_fixed; ++k) {
+                    if (data[candidate + fixed[k].offset] != fixed[k].byte) {
                         match = false;
                         break;
                     }
@@ -246,8 +258,8 @@ const uint8_t* find_pattern_avx2(
     for (; i < scan_limit; ++i) {
         if (data[i + first_fixed] != first_byte) continue;
         bool match = true;
-        for (size_t j = 0; j < pat_len; ++j) {
-            if (pat_mask[j] != 0x00 && data[i + j] != pat_bytes[j]) {
+        for (size_t k = 0; k < num_fixed; ++k) {
+            if (data[i + fixed[k].offset] != fixed[k].byte) {
                 match = false;
                 break;
             }
