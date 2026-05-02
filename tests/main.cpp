@@ -7,6 +7,7 @@ void test_encode();
 void test_url();
 void test_utf8();
 void test_file();
+void test_pattern();
 
 int main() {
     test_scan();
@@ -16,6 +17,7 @@ int main() {
     test_url();
     test_utf8();
     test_file();
+    test_pattern();
 
     std::printf("\n%d passed, %d failed\n", test::g_stats.passed, test::g_stats.failed);
     return test::g_stats.failed > 0 ? 1 : 0;
