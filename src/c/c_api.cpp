@@ -160,6 +160,37 @@ size_t simdtext_file_count_lines(simdtext_file_t file) {
     return file->scanner.count_lines();
 }
 
+// ── Pattern scanning ──────────────────────────────────────
+
+const uint8_t* simdtext_find_pattern(const uint8_t* data, size_t length, const char* hex_pattern) {
+    if (!data || !hex_pattern || length == 0) return nullptr;
+    return simdtext::find_pattern(data, length, std::string_view(hex_pattern));
+}
+
+int simdtext_byte_pattern_parse(const char* hex_pattern, uint8_t* out_bytes, uint8_t* out_masks, size_t* out_length, size_t capacity) {
+    if (!hex_pattern || !out_length) return 0;
+    auto pat = simdtext::BytePattern::parse(std::string_view(hex_pattern));
+    if (!pat) return 0;
+    *out_length = pat->size();
+    if (out_bytes && out_masks) {
+        size_t n = pat->size() < capacity ? pat->size() : capacity;
+        for (size_t i = 0; i < n; ++i) {
+            out_bytes[i] = pat->byte(i);
+            out_masks[i] = pat->mask(i);
+        }
+    }
+    return 1;
+}
+
+// ── Parallel processing ────────────────────────────────────
+
+size_t simdtext_parallel_count_byte(const char* data, size_t len, char byte, unsigned int num_threads) {
+    if (!data || len == 0) return 0;
+    simdtext::ParallelOptions opts;
+    opts.num_threads = num_threads;
+    return simdtext::parallel_count_byte(std::string_view(data, len), byte, opts);
+}
+
 // ── Memory management ──────────────────────────────────────
 
 void simdtext_free(void* ptr) {

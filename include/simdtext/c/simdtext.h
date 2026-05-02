@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -42,6 +43,13 @@ void simdtext_file_close(simdtext_file_t file);
 const char* simdtext_file_data(simdtext_file_t file);
 size_t simdtext_file_size(simdtext_file_t file);
 size_t simdtext_file_count_lines(simdtext_file_t file);
+
+// Pattern scanning
+const uint8_t* simdtext_find_pattern(const uint8_t* data, size_t length, const char* hex_pattern);
+int simdtext_byte_pattern_parse(const char* hex_pattern, uint8_t* out_bytes, uint8_t* out_masks, size_t* out_length, size_t capacity);
+
+// Parallel processing
+size_t simdtext_parallel_count_byte(const char* data, size_t len, char byte, unsigned int num_threads);
 
 // Memory management
 void simdtext_free(void* ptr);

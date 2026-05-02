@@ -17,3 +17,4 @@
 #include <simdtext/file.hpp>
 #include <simdtext/utf8.hpp>
 #include "simdtext/parallel.hpp"
+#include "simdtext/pattern.hpp"
