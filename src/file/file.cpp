@@ -7,13 +7,15 @@
 #include <unistd.h>
 #endif
 
+#include <filesystem>
+
 namespace simdtext {
 
 // ── MappedFile ─────────────────────────────────────────────
 
 class MappedFile::Impl {
 public:
-    Impl() : data_(nullptr), size_(0) {}
+    Impl() = default;
 
     ~Impl() {
 #ifdef __linux__
@@ -62,15 +64,15 @@ public:
 #endif
     }
 
-    std::string_view view() const {
-        return std::string_view(data_, size_);
+    std::string_view view() const noexcept {
+        return {data_, size_};
     }
 
-    size_t size() const { return size_; }
+    size_t size() const noexcept { return size_; }
 
 private:
-    const char* data_;
-    size_t size_;
+    const char* data_ = nullptr;
+    size_t size_ = 0;
     int fd_ = -1;
     std::string buffer_; // fallback for non-Linux
 };
@@ -89,11 +91,11 @@ bool MappedFile::open(const char* path) {
     return impl_->open(path);
 }
 
-std::string_view MappedFile::view() const {
+std::string_view MappedFile::view() const noexcept {
     return impl_->view();
 }
 
-size_t MappedFile::size() const {
+size_t MappedFile::size() const noexcept {
     return impl_->size();
 }
 
@@ -108,14 +110,14 @@ bool FileScanner::is_open() const {
 }
 
 void FileScanner::each_line(std::function<void(std::string_view)> callback) const {
-    for (auto line : lines(file_.view())) {
+    for (const auto line : lines(file_.view())) {
         callback(line);
     }
 }
 
 void FileScanner::each_line_containing(std::string_view needle,
                                         std::function<void(std::string_view)> callback) const {
-    for (auto line : lines(file_.view())) {
+    for (const auto line : lines(file_.view())) {
         if (contains(line, needle)) {
             callback(line);
         }
@@ -128,8 +130,8 @@ size_t FileScanner::count_lines() const {
 
 size_t FileScanner::count_matching(std::string_view needle) const {
     size_t count = 0;
-    for (auto line : lines(file_.view())) {
-        if (contains(line, needle)) count++;
+    for (const auto line : lines(file_.view())) {
+        if (contains(line, needle)) ++count;
     }
     return count;
 }

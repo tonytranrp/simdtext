@@ -1,11 +1,48 @@
 #include "simdtext/simdtext.hpp"
 #include <cstring>
+#include <utility>
 
 namespace simdtext {
 
-// ── Scanning functions are in src/highway/simd_hwy.cpp ─────
-// count_byte, count_newlines, is_ascii, lowercase_ascii_inplace,
-// uppercase_ascii_inplace, find_byte
+// ── Scanning (scalar fallback, used when Highway is disabled) ──
+
+size_t count_byte(std::span<const char> input, char byte) {
+    size_t count = 0;
+    for (auto c : input) {
+        if (c == byte) ++count;
+    }
+    return count;
+}
+
+size_t count_newlines(std::span<const char> input) {
+    return count_byte(input, '\n');
+}
+
+bool is_ascii(std::span<const char> input) {
+    for (auto c : input) {
+        if (static_cast<unsigned char>(c) >= 0x80) return false;
+    }
+    return true;
+}
+
+void lowercase_ascii_inplace(std::span<char> input) {
+    for (auto& c : input) {
+        if (c >= 'A' && c <= 'Z') c |= 0x20;
+    }
+}
+
+void uppercase_ascii_inplace(std::span<char> input) {
+    for (auto& c : input) {
+        if (c >= 'a' && c <= 'z') c &= ~0x20;
+    }
+}
+
+const char* find_byte(const char* begin, const char* end, char byte) {
+    for (const char* p = begin; p != end; ++p) {
+        if (*p == byte) return p;
+    }
+    return end;
+}
 
 // ── Contains ───────────────────────────────────────────────
 
@@ -17,17 +54,15 @@ bool contains(std::string_view input, std::string_view needle) {
 
 // ── Trim ASCII ─────────────────────────────────────────────
 
+constexpr static bool is_ascii_whitespace(char c) noexcept {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
 std::string_view trim_ascii(std::string_view input) {
-    while (!input.empty() && (input.front() == ' '  ||
-                               input.front() == '\t' ||
-                               input.front() == '\r' ||
-                               input.front() == '\n')) {
+    while (!input.empty() && is_ascii_whitespace(input.front())) {
         input.remove_prefix(1);
     }
-    while (!input.empty() && (input.back() == ' '  ||
-                               input.back() == '\t' ||
-                               input.back() == '\r' ||
-                               input.back() == '\n')) {
+    while (!input.empty() && is_ascii_whitespace(input.back())) {
         input.remove_suffix(1);
     }
     return input;
@@ -35,27 +70,28 @@ std::string_view trim_ascii(std::string_view input) {
 
 // ── Lines & Splitting ──────────────────────────────────────
 
-LineView::Iterator::Iterator(std::string_view remaining)
-    : remaining_(remaining) {
-    auto pos = remaining_.find('\n');
+namespace {
+
+void advance_split(std::string_view& remaining, std::string_view& segment, char delim) {
+    const auto pos = remaining.find(delim);
     if (pos == std::string_view::npos) {
-        line_ = remaining_;
-        remaining_ = {};
+        segment = remaining;
+        remaining = {};
     } else {
-        line_ = remaining_.substr(0, pos);
-        remaining_ = remaining_.substr(pos + 1);
+        segment = remaining.substr(0, pos);
+        remaining = remaining.substr(pos + 1);
     }
 }
 
+} // anonymous namespace
+
+LineView::Iterator::Iterator(std::string_view remaining)
+    : remaining_(remaining) {
+    advance_split(remaining_, line_, '\n');
+}
+
 LineView::Iterator& LineView::Iterator::operator++() {
-    auto pos = remaining_.find('\n');
-    if (pos == std::string_view::npos) {
-        line_ = remaining_;
-        remaining_ = {};
-    } else {
-        line_ = remaining_.substr(0, pos);
-        remaining_ = remaining_.substr(pos + 1);
-    }
+    advance_split(remaining_, line_, '\n');
     return *this;
 }
 
@@ -71,25 +107,11 @@ LineView lines(std::string_view input) {
 
 SplitView::Iterator::Iterator(std::string_view remaining, char delim)
     : remaining_(remaining), delim_(delim) {
-    auto pos = remaining_.find(delim_);
-    if (pos == std::string_view::npos) {
-        segment_ = remaining_;
-        remaining_ = {};
-    } else {
-        segment_ = remaining_.substr(0, pos);
-        remaining_ = remaining_.substr(pos + 1);
-    }
+    advance_split(remaining_, segment_, delim_);
 }
 
 SplitView::Iterator& SplitView::Iterator::operator++() {
-    auto pos = remaining_.find(delim_);
-    if (pos == std::string_view::npos) {
-        segment_ = remaining_;
-        remaining_ = {};
-    } else {
-        segment_ = remaining_.substr(0, pos);
-        remaining_ = remaining_.substr(pos + 1);
-    }
+    advance_split(remaining_, segment_, delim_);
     return *this;
 }
 
@@ -106,11 +128,11 @@ SplitView split(std::string_view input, char delimiter) {
 // ── UTF-8 ──────────────────────────────────────────────────
 
 bool valid_utf8(std::span<const char> input) {
-    const uint8_t* p = reinterpret_cast<const uint8_t*>(input.data());
-    const uint8_t* end = p + input.size();
+    const auto* p = reinterpret_cast<const uint8_t*>(input.data());
+    const auto* end = p + input.size();
 
     while (p < end) {
-        uint8_t byte = *p++;
+        const auto byte = *p++;
 
         if (byte <= 0x7F) {
             continue;

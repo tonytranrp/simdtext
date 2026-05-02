@@ -1,10 +1,13 @@
 #include <simdtext/simdtext.hpp>
+#include <format>
 #include <iostream>
 #include <string>
 #include <chrono>
+#include <filesystem>
+#include <array>
 
 static void print_usage() {
-    std::cout << R"(simdtext — high-performance text utilities
+    std::cout << std::format(R"(simdtext — high-performance text utilities
 
 Usage:
   simdtext stats <file>              Show file statistics
@@ -17,90 +20,85 @@ Usage:
   simdtext url-decode <string>       URL-decode a string
   simdtext url-encode <string>       URL-encode a string
   simdtext validate-utf8 <file>      Validate UTF-8 encoding
-)" << std::flush;
+)");
 }
 
 static std::string format_size(size_t bytes) {
-    const char* units[] = {"B", "KB", "MB", "GB", "TB"};
+    constexpr std::array units = {"B", "KB", "MB", "GB", "TB"};
     int u = 0;
     double size = static_cast<double>(bytes);
-    while (size >= 1024 && u < 4) { size /= 1024; u++; }
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%.1f %s", size, units[u]);
-    return buf;
+    while (size >= 1024 && u < 4) { size /= 1024; ++u; }
+    return std::format("{:.1f} {}", size, units[u]);
 }
 
 static std::string format_rate(size_t bytes, double seconds) {
     if (seconds <= 0) return "inf GB/s";
-    double gb = static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0);
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%.1f GB/s", gb / seconds);
-    return buf;
+    const double gb = static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0);
+    return std::format("{:.1f} GB/s", gb / seconds);
 }
 
 int cmd_stats(const char* path) {
-    auto start = std::chrono::high_resolution_clock::now();
+    const auto start = std::chrono::high_resolution_clock::now();
 
-    simdtext::FileScanner scanner(path);
+    const simdtext::FileScanner scanner(path);
     if (!scanner.is_open()) {
-        std::cerr << "Cannot open: " << path << "\n";
+        std::cerr << std::format("Cannot open: {}\n", path);
         return 1;
     }
 
-    simdtext::MappedFile mf(path);
-    auto view = mf.view();
+    const simdtext::MappedFile mf(path);
+    const auto view = mf.view();
 
-    size_t lines = scanner.count_lines();
-    bool ascii = simdtext::is_ascii(view);
-    bool utf8 = simdtext::valid_utf8(view);
+    const size_t line_count = scanner.count_lines();
+    const bool ascii = simdtext::is_ascii(view);
+    const bool utf8 = simdtext::valid_utf8(view);
 
-    auto end = std::chrono::high_resolution_clock::now();
-    double elapsed = std::chrono::duration<double>(end - start).count();
+    const auto end = std::chrono::high_resolution_clock::now();
+    const double elapsed = std::chrono::duration<double>(end - start).count();
 
-    std::cout << "File: " << path << "\n";
-    std::cout << "Size: " << format_size(view.size()) << "\n";
-    std::cout << "Lines: " << lines << "\n";
-    std::cout << "ASCII: " << (ascii ? "yes" : "no") << "\n";
-    std::cout << "UTF-8 valid: " << (utf8 ? "yes" : "no") << "\n";
-    std::cout << "Scan speed: " << format_rate(view.size(), elapsed) << "\n";
+    std::cout << std::format("File: {}\n", path);
+    std::cout << std::format("Size: {}\n", format_size(view.size()));
+    std::cout << std::format("Lines: {}\n", line_count);
+    std::cout << std::format("ASCII: {}\n", ascii ? "yes" : "no");
+    std::cout << std::format("UTF-8 valid: {}\n", utf8 ? "yes" : "no");
+    std::cout << std::format("Scan speed: {}\n", format_rate(view.size(), elapsed));
 
     return 0;
 }
 
 int cmd_grep(const char* path, const char* pattern) {
-    simdtext::FileScanner scanner(path);
+    const simdtext::FileScanner scanner(path);
     if (!scanner.is_open()) {
-        std::cerr << "Cannot open: " << path << "\n";
+        std::cerr << std::format("Cannot open: {}\n", path);
         return 1;
     }
 
     scanner.each_line_containing(pattern, [](std::string_view line) {
-        std::cout << line << "\n";
+        std::cout << std::format("{}\n", line);
     });
 
     return 0;
 }
 
 int cmd_count(const char* path, const char byte_char) {
-    simdtext::MappedFile mf(path);
+    const simdtext::MappedFile mf(path);
     if (mf.size() == 0 && mf.view().data() == nullptr) {
-        std::cerr << "Cannot open: " << path << "\n";
+        std::cerr << std::format("Cannot open: {}\n", path);
         return 1;
     }
 
-    size_t count = simdtext::count_byte(mf.view(), byte_char);
-    std::cout << count << "\n";
+    const size_t count = simdtext::count_byte(mf.view(), byte_char);
+    std::cout << std::format("{}\n", count);
     return 0;
 }
 
 int cmd_lower(const char* path) {
-    simdtext::MappedFile mf(path);
+    const simdtext::MappedFile mf(path);
     if (mf.size() == 0 && mf.view().data() == nullptr) {
-        std::cerr << "Cannot open: " << path << "\n";
+        std::cerr << std::format("Cannot open: {}\n", path);
         return 1;
     }
 
-    // Need mutable copy since mmap is read-only
     std::string data(mf.view());
     simdtext::lowercase_ascii_inplace(data);
     std::cout << data;
@@ -108,9 +106,9 @@ int cmd_lower(const char* path) {
 }
 
 int cmd_upper(const char* path) {
-    simdtext::MappedFile mf(path);
+    const simdtext::MappedFile mf(path);
     if (mf.size() == 0 && mf.view().data() == nullptr) {
-        std::cerr << "Cannot open: " << path << "\n";
+        std::cerr << std::format("Cannot open: {}\n", path);
         return 1;
     }
 
@@ -121,50 +119,50 @@ int cmd_upper(const char* path) {
 }
 
 int cmd_hex_encode(const char* path) {
-    simdtext::MappedFile mf(path);
+    const simdtext::MappedFile mf(path);
     if (mf.size() == 0 && mf.view().data() == nullptr) {
-        std::cerr << "Cannot open: " << path << "\n";
+        std::cerr << std::format("Cannot open: {}\n", path);
         return 1;
     }
 
-    auto encoded = simdtext::hex_encode(
+    const auto encoded = simdtext::hex_encode(
         std::span<const std::byte>(reinterpret_cast<const std::byte*>(mf.view().data()), mf.view().size()));
-    std::cout << encoded << "\n";
+    std::cout << std::format("{}\n", encoded);
     return 0;
 }
 
 int cmd_base64_encode(const char* path) {
-    simdtext::MappedFile mf(path);
+    const simdtext::MappedFile mf(path);
     if (mf.size() == 0 && mf.view().data() == nullptr) {
-        std::cerr << "Cannot open: " << path << "\n";
+        std::cerr << std::format("Cannot open: {}\n", path);
         return 1;
     }
 
-    auto encoded = simdtext::base64_encode(
+    const auto encoded = simdtext::base64_encode(
         std::span<const std::byte>(reinterpret_cast<const std::byte*>(mf.view().data()), mf.view().size()));
-    std::cout << encoded << "\n";
+    std::cout << std::format("{}\n", encoded);
     return 0;
 }
 
 int cmd_url_decode(const char* str) {
-    std::cout << simdtext::url_decode(str) << "\n";
+    std::cout << std::format("{}\n", simdtext::url_decode(str));
     return 0;
 }
 
 int cmd_url_encode(const char* str) {
-    std::cout << simdtext::url_encode(str) << "\n";
+    std::cout << std::format("{}\n", simdtext::url_encode(str));
     return 0;
 }
 
 int cmd_validate_utf8(const char* path) {
-    simdtext::MappedFile mf(path);
+    const simdtext::MappedFile mf(path);
     if (mf.size() == 0 && mf.view().data() == nullptr) {
-        std::cerr << "Cannot open: " << path << "\n";
+        std::cerr << std::format("Cannot open: {}\n", path);
         return 1;
     }
 
-    bool valid = simdtext::valid_utf8(mf.view());
-    std::cout << (valid ? "valid" : "invalid") << "\n";
+    const bool valid = simdtext::valid_utf8(mf.view());
+    std::cout << std::format("{}\n", valid ? "valid" : "invalid");
     return valid ? 0 : 1;
 }
 
@@ -174,7 +172,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::string cmd = argv[1];
+    const std::string_view cmd = argv[1];
 
     if (cmd == "stats" && argc >= 3) return cmd_stats(argv[2]);
     if (cmd == "grep" && argc >= 4) return cmd_grep(argv[2], argv[3]);
@@ -187,7 +185,7 @@ int main(int argc, char* argv[]) {
     if (cmd == "url-encode" && argc >= 3) return cmd_url_encode(argv[2]);
     if (cmd == "validate-utf8" && argc >= 3) return cmd_validate_utf8(argv[2]);
 
-    std::cerr << "Unknown command or missing arguments: " << cmd << "\n";
+    std::cerr << std::format("Unknown command or missing arguments: {}\n", cmd);
     print_usage();
     return 1;
 }

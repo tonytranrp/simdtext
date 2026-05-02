@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 project(simdtext VERSION 0.1.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -63,7 +63,17 @@ endif()
 add_executable(example_stats examples/stats.cpp)
 target_link_libraries(example_stats PRIVATE simdtext)
 
-add_executable(test_simdtext examples/test.cpp)
+add_executable(test_simdtext
+    tests/main.cpp
+    tests/test_scan.cpp
+    tests/test_ascii.cpp
+    tests/test_lines.cpp
+    tests/test_encode.cpp
+    tests/test_url.cpp
+    tests/test_utf8.cpp
+    tests/test_file.cpp
+)
+target_include_directories(test_simdtext PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 target_link_libraries(test_simdtext PRIVATE simdtext)
 
 # ── CLI tool ────────────────────────────────────────────────
