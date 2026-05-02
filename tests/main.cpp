@@ -10,6 +10,7 @@ void test_file();
 void test_pattern();
 void test_parallel();
 void test_str();
+void test_hash();
 
 int main() {
     test_scan();
@@ -22,6 +23,7 @@ int main() {
     test_pattern();
     test_parallel();
     test_str();
+    test_hash();
 
     std::printf("\n%d passed, %d failed\n", test::g_stats.passed, test::g_stats.failed);
     return test::g_stats.failed > 0 ? 1 : 0;
