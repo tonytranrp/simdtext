@@ -90,6 +90,16 @@ int simdtext_valid_utf8(const char* data, size_t len) {
     return simdtext::valid_utf8({data, len}) ? 1 : 0;
 }
 
+simdtext_utf8_result_t simdtext_validate_utf8_detailed(const char* data, size_t len) {
+    simdtext_utf8_result_t result = {1, 0, 0};
+    if (!data || len == 0) return result;
+    auto r = simdtext::validate_utf8_detailed(std::string_view(data, len));
+    result.valid = r.valid ? 1 : 0;
+    result.error_offset = r.error_offset;
+    result.error_byte = r.error_byte;
+    return result;
+}
+
 // ── Encoding ───────────────────────────────────────────────
 
 char* simdtext_hex_encode(const char* data, size_t len) {

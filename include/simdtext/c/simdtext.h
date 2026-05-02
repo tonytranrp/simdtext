@@ -26,7 +26,14 @@ void simdtext_lowercase_ascii(char* data, size_t len);
 void simdtext_uppercase_ascii(char* data, size_t len);
 
 // UTF-8
+typedef struct simdtext_utf8_result {
+    int valid;           ///< 1 if valid UTF-8
+    size_t error_offset; ///< Byte offset of first error (0 if valid)
+    uint8_t error_byte;  ///< The invalid byte at error_offset
+} simdtext_utf8_result_t;
+
 int simdtext_valid_utf8(const char* data, size_t len);
+simdtext_utf8_result_t simdtext_validate_utf8_detailed(const char* data, size_t len);
 
 // Encoding
 // Returns allocated string, caller must free with simdtext_free()
