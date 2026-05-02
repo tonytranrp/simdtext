@@ -1,4 +1,5 @@
 #include <emmintrin.h>  // SSE2
+#include <tmmintrin.h>  // SSSE3 for _mm_shuffle_epi8
 #include <cstddef>
 
 #if defined(_MSC_VER)
