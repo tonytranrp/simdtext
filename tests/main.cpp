@@ -17,6 +17,7 @@ void test_diff();
 void test_log();
 void test_xml();
 void test_markdown();
+void test_config();
 
 int main() {
     test_scan();
@@ -36,6 +37,7 @@ int main() {
     test_log();
     test_xml();
     test_markdown();
+    test_config();
 
     std::printf("\n%d passed, %d failed\n", test::g_stats.passed, test::g_stats.failed);
     return test::g_stats.failed > 0 ? 1 : 0;
