@@ -1,17 +1,18 @@
 #include <simdtext/simdtext.hpp>
 #include <cassert>
-#include <print>
+#include <format>
+#include <iostream>
 #include <vector>
 #include <fstream>
 
-#define TEST(name) std::print("  {}...", name);
-#define PASS() std::print(" OK\n")
+#define TEST(name) std::cout << std::format("  {}...", name) << std::flush;
+#define PASS() std::cout << " OK\n"
 
 int main() {
-    std::print("=== simdtext tests ===\n\n");
+    std::cout << "=== simdtext tests ===\n\n";
 
     // ── Scanning ───────────────────────────────────
-    std::print("[Scanning]\n");
+    std::cout << "[Scanning]\n";
 
     TEST("count_byte");
     assert(simdtext::count_byte("hello\nworld\nfoo\n", '\n') == 3);
@@ -39,7 +40,7 @@ int main() {
     PASS();
 
     // ── ASCII ──────────────────────────────────────
-    std::print("\n[ASCII]\n");
+    std::cout << "\n[ASCII]\n";
 
     TEST("is_ascii");
     assert(simdtext::is_ascii("hello world") == true);
@@ -78,7 +79,7 @@ int main() {
     PASS();
 
     // ── Lines & Splitting ──────────────────────────
-    std::print("\n[Lines & Splitting]\n");
+    std::cout << "\n[Lines & Splitting]\n";
 
     TEST("lines");
     {
@@ -111,7 +112,7 @@ int main() {
     PASS();
 
     // ── Hex ────────────────────────────────────────
-    std::print("\n[Hex]\n");
+    std::cout << "\n[Hex]\n";
 
     TEST("hex_encode");
     {
@@ -143,7 +144,7 @@ int main() {
     PASS();
 
     // ── Base64 ─────────────────────────────────────
-    std::print("\n[Base64]\n");
+    std::cout << "\n[Base64]\n";
 
     TEST("base64_encode");
     {
@@ -175,7 +176,7 @@ int main() {
     PASS();
 
     // ── URL ────────────────────────────────────────
-    std::print("\n[URL]\n");
+    std::cout << "\n[URL]\n";
 
     TEST("url_encode");
     assert(simdtext::url_encode("hello world") == "hello%20world");
@@ -202,7 +203,7 @@ int main() {
     PASS();
 
     // ── UTF-8 ──────────────────────────────────────
-    std::print("\n[UTF-8]\n");
+    std::cout << "\n[UTF-8]\n";
 
     TEST("valid_utf8");
     assert(simdtext::valid_utf8("hello") == true);
@@ -211,7 +212,7 @@ int main() {
     PASS();
 
     // ── File I/O ───────────────────────────────────
-    std::print("\n[File I/O]\n");
+    std::cout << "\n[File I/O]\n";
 
     TEST("MappedFile + FileScanner");
     {
@@ -234,6 +235,6 @@ int main() {
     }
     PASS();
 
-    std::print("\n=== All tests passed! ===\n");
+    std::cout << "\n=== All tests passed! ===\n";
     return 0;
 }

@@ -3,6 +3,7 @@
 /// @file lines.hpp
 /// @brief Zero-allocation line iteration and string splitting.
 
+#include "export.hpp"
 #include <cstddef>
 #include <iterator>
 #include <string_view>
@@ -11,9 +12,9 @@ namespace simdtext {
 
 /// Iterable view over lines in a text buffer (split by '\n').
 /// Each line is a string_view — no allocation.
-class LineView {
+class SIMDTEXT_API LineView {
 public:
-    class Iterator {
+    class SIMDTEXT_API Iterator {
     public:
         using iterator_category = std::forward_iterator_tag;
         using value_type = std::string_view;
@@ -24,17 +25,19 @@ public:
         Iterator() = default;
         Iterator(std::string_view remaining);
 
-        reference operator*() const { return line_; }
-        pointer operator->() const { return &line_; }
+        SIMDTEXT_NODISCARD reference operator*() const { return line_; }
+        SIMDTEXT_NODISCARD pointer operator->() const { return &line_; }
 
         Iterator& operator++();
         Iterator operator++(int);
 
-        bool operator==(const Iterator& other) const {
+        SIMDTEXT_NODISCARD bool operator==(const Iterator& other) const {
             return remaining_.data() == other.remaining_.data() &&
-                   remaining_.size() == other.remaining_.size();
+                   remaining_.size() == other.remaining_.size() &&
+                   line_.data() == other.line_.data() &&
+                   line_.size() == other.line_.size();
         }
-        bool operator!=(const Iterator& other) const { return !(*this == other); }
+        SIMDTEXT_NODISCARD bool operator!=(const Iterator& other) const { return !(*this == other); }
 
     private:
         std::string_view remaining_;
@@ -51,12 +54,12 @@ private:
 };
 
 /// Convenience: create a LineView from a string_view.
-LineView lines(std::string_view input);
+SIMDTEXT_NODISCARD SIMDTEXT_API LineView lines(std::string_view input);
 
 /// Iterable view over segments split by a delimiter.
-class SplitView {
+class SIMDTEXT_API SplitView {
 public:
-    class Iterator {
+    class SIMDTEXT_API Iterator {
     public:
         using iterator_category = std::forward_iterator_tag;
         using value_type = std::string_view;
@@ -67,17 +70,19 @@ public:
         Iterator() = default;
         Iterator(std::string_view remaining, char delim);
 
-        reference operator*() const { return segment_; }
-        pointer operator->() const { return &segment_; }
+        SIMDTEXT_NODISCARD reference operator*() const { return segment_; }
+        SIMDTEXT_NODISCARD pointer operator->() const { return &segment_; }
 
         Iterator& operator++();
         Iterator operator++(int);
 
-        bool operator==(const Iterator& other) const {
+        SIMDTEXT_NODISCARD bool operator==(const Iterator& other) const {
             return remaining_.data() == other.remaining_.data() &&
-                   remaining_.size() == other.remaining_.size();
+                   remaining_.size() == other.remaining_.size() &&
+                   segment_.data() == other.segment_.data() &&
+                   segment_.size() == other.segment_.size();
         }
-        bool operator!=(const Iterator& other) const { return !(*this == other); }
+        SIMDTEXT_NODISCARD bool operator!=(const Iterator& other) const { return !(*this == other); }
 
     private:
         std::string_view remaining_;
@@ -96,6 +101,6 @@ private:
 };
 
 /// Split a string_view by a delimiter into an iterable view.
-SplitView split(std::string_view input, char delimiter);
+SIMDTEXT_NODISCARD SIMDTEXT_API SplitView split(std::string_view input, char delimiter);
 
 } // namespace simdtext

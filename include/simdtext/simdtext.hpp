@@ -6,6 +6,7 @@
 /// Includes all individual headers. For finer-grained control,
 /// include only the specific headers you need.
 
+#include <simdtext/export.hpp>
 #include <simdtext/version.hpp>
 #include <simdtext/types.hpp>
 #include <simdtext/scan.hpp>

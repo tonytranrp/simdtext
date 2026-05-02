@@ -27,7 +27,7 @@ size_t hex_encode_to(std::span<const std::byte> input, std::span<char> output) {
 
 std::string hex_encode(std::span<const std::byte> input) {
     std::string result(input.size() * 2, '\0');
-    hex_encode_to(input, std::span<char>(result));
+    (void)hex_encode_to(input, std::span<char>(result));
     return result;
 }
 
@@ -69,7 +69,7 @@ DecodeResult hex_decode_to(std::string_view input, std::span<char> output) {
 
 std::vector<std::byte> hex_decode(std::string_view input) {
     std::vector<std::byte> result(input.size() / 2);
-    hex_decode_to(input, std::span<std::byte>(result));
+    (void)hex_decode_to(input, std::span<std::byte>(result));
     return result;
 }
 
@@ -199,7 +199,7 @@ std::vector<std::byte> base64_decode(std::string_view input) {
     if (input.size() >= 1 && input.back() == '=') ++padding;
     if (input.size() >= 2 && input[input.size()-2] == '=') ++padding;
     std::vector<std::byte> result(max_bytes - padding);
-    base64_decode_to(input, std::span<std::byte>(result));
+    (void)base64_decode_to(input, std::span<std::byte>(result));
     return result;
 }
 

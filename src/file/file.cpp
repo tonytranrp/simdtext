@@ -28,13 +28,13 @@ public:
 #endif
     }
 
-    bool open(const char* path) {
+    bool open(std::filesystem::path path) {
 #ifdef __linux__
-        fd_ = ::open(path, O_RDONLY);
-        if (fd_ < 0) return false;
+        fd_ = ::open(path.c_str(), O_RDONLY);
+        if (fd_ < 0) [[unlikely]] return false;
 
         struct stat st;
-        if (fstat(fd_, &st) < 0) return false;
+        if (fstat(fd_, &st) < 0) [[unlikely]] return false;
         size_ = static_cast<size_t>(st.st_size);
 
         if (size_ == 0) {
@@ -43,7 +43,7 @@ public:
         }
 
         void* mapped = mmap(nullptr, size_, PROT_READ, MAP_PRIVATE, fd_, 0);
-        if (mapped == MAP_FAILED) {
+        if (mapped == MAP_FAILED) [[unlikely]] {
             data_ = nullptr;
             size_ = 0;
             return false;

@@ -103,6 +103,9 @@ std::unordered_map<std::string, std::string> parse_query(std::string_view query)
         query.remove_prefix(1);
     }
 
+    // Empty query after stripping '?' produces no params
+    if (query.empty()) return params;
+
     for (const auto pair : split(query, '&')) {
         const auto eq = pair.find('=');
         if (eq == std::string_view::npos) {

@@ -1,18 +1,19 @@
 #include <simdtext/simdtext.hpp>
-#include <print>
+#include <format>
+#include <iostream>
 #include <fstream>
 #include <string>
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        std::print(stderr, "Usage: {} <file>\n", argv[0]);
+        std::cerr << std::format("Usage: {} <file>\n", argv[0]);
         return 1;
     }
 
     // Read file into string
     std::ifstream file(argv[1], std::ios::binary);
     if (!file) {
-        std::print(stderr, "Cannot open: {}\n", argv[1]);
+        std::cerr << std::format("Cannot open: {}\n", argv[1]);
         return 1;
     }
     std::string data((std::istreambuf_iterator<char>(file)),
@@ -31,12 +32,12 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    std::print("File: {}\n", argv[1]);
-    std::print("Size: {} bytes\n", data.size());
-    std::print("Lines: {}\n", line_count);
-    std::print("ASCII: {}\n", ascii ? "yes" : "no");
-    std::print("UTF-8 valid: {}\n", utf8 ? "yes" : "no");
-    std::print("Errors: {}\n", error_count);
+    std::cout << std::format("File: {}\n", argv[1]);
+    std::cout << std::format("Size: {} bytes\n", data.size());
+    std::cout << std::format("Lines: {}\n", line_count);
+    std::cout << std::format("ASCII: {}\n", ascii ? "yes" : "no");
+    std::cout << std::format("UTF-8 valid: {}\n", utf8 ? "yes" : "no");
+    std::cout << std::format("Errors: {}\n", error_count);
 
     return 0;
 }

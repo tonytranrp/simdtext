@@ -1,17 +1,42 @@
 #include "simdtext/simdtext.hpp"
+#include "simdtext/detail/cpu_detect.hpp"
 #include <cstring>
 #include <utility>
 
 namespace simdtext {
 
-// ── Scanning (scalar fallback, used when Highway is disabled) ──
+// ── Scanning functions (dispatch to detail::scalar/sse2/avx2) ─
+
+namespace detail {
+namespace scalar {
+size_t count_byte(const char* data, size_t size, char byte);
+bool is_ascii(const char* data, size_t size);
+void lowercase_ascii(char* data, size_t size);
+void uppercase_ascii(char* data, size_t size);
+const char* find_byte(const char* data, size_t size, char byte);
+}
+namespace sse2 {
+size_t count_byte(const char* data, size_t size, char byte);
+bool is_ascii(const char* data, size_t size);
+void lowercase_ascii(char* data, size_t size);
+void uppercase_ascii(char* data, size_t size);
+const char* find_byte(const char* data, size_t size, char byte);
+}
+namespace avx2 {
+size_t count_byte(const char* data, size_t size, char byte);
+bool is_ascii(const char* data, size_t size);
+void lowercase_ascii(char* data, size_t size);
+void uppercase_ascii(char* data, size_t size);
+const char* find_byte(const char* data, size_t size, char byte);
+}
+} // namespace detail
 
 size_t count_byte(std::span<const char> input, char byte) {
-    size_t count = 0;
-    for (auto c : input) {
-        if (c == byte) ++count;
-    }
-    return count;
+    if (input.empty()) return 0;
+    const auto& f = detail::detect_cpu();
+    if (f.avx2)    return detail::avx2::count_byte(input.data(), input.size(), byte);
+    if (f.sse2)    return detail::sse2::count_byte(input.data(), input.size(), byte);
+    return detail::scalar::count_byte(input.data(), input.size(), byte);
 }
 
 size_t count_newlines(std::span<const char> input) {
@@ -19,29 +44,36 @@ size_t count_newlines(std::span<const char> input) {
 }
 
 bool is_ascii(std::span<const char> input) {
-    for (auto c : input) {
-        if (static_cast<unsigned char>(c) >= 0x80) return false;
-    }
-    return true;
+    if (input.empty()) return true;
+    const auto& f = detail::detect_cpu();
+    if (f.avx2)    return detail::avx2::is_ascii(input.data(), input.size());
+    if (f.sse2)    return detail::sse2::is_ascii(input.data(), input.size());
+    return detail::scalar::is_ascii(input.data(), input.size());
 }
 
 void lowercase_ascii_inplace(std::span<char> input) {
-    for (auto& c : input) {
-        if (c >= 'A' && c <= 'Z') c |= 0x20;
-    }
+    if (input.empty()) return;
+    const auto& f = detail::detect_cpu();
+    if (f.avx2)    return detail::avx2::lowercase_ascii(input.data(), input.size());
+    if (f.sse2)    return detail::sse2::lowercase_ascii(input.data(), input.size());
+    detail::scalar::lowercase_ascii(input.data(), input.size());
 }
 
 void uppercase_ascii_inplace(std::span<char> input) {
-    for (auto& c : input) {
-        if (c >= 'a' && c <= 'z') c &= ~0x20;
-    }
+    if (input.empty()) return;
+    const auto& f = detail::detect_cpu();
+    if (f.avx2)    return detail::avx2::uppercase_ascii(input.data(), input.size());
+    if (f.sse2)    return detail::sse2::uppercase_ascii(input.data(), input.size());
+    detail::scalar::uppercase_ascii(input.data(), input.size());
 }
 
 const char* find_byte(const char* begin, const char* end, char byte) {
-    for (const char* p = begin; p != end; ++p) {
-        if (*p == byte) return p;
-    }
-    return end;
+    const size_t size = static_cast<size_t>(end - begin);
+    if (size == 0) return end;
+    const auto& f = detail::detect_cpu();
+    if (f.avx2)    return detail::avx2::find_byte(begin, size, byte);
+    if (f.sse2)    return detail::sse2::find_byte(begin, size, byte);
+    return detail::scalar::find_byte(begin, size, byte);
 }
 
 // ── Contains ───────────────────────────────────────────────
@@ -70,28 +102,36 @@ std::string_view trim_ascii(std::string_view input) {
 
 // ── Lines & Splitting ──────────────────────────────────────
 
-namespace {
-
-void advance_split(std::string_view& remaining, std::string_view& segment, char delim) {
-    const auto pos = remaining.find(delim);
+LineView::Iterator::Iterator(std::string_view remaining)
+    : remaining_(remaining), line_() {
+    if (remaining.data() == nullptr) {
+        // Sentinel end iterator
+        return;
+    }
+    const auto pos = remaining.find('\n');
     if (pos == std::string_view::npos) {
-        segment = remaining;
-        remaining = {};
+        line_ = remaining;
+        remaining_ = {};
     } else {
-        segment = remaining.substr(0, pos);
-        remaining = remaining.substr(pos + 1);
+        line_ = remaining.substr(0, pos);
+        remaining_ = remaining.substr(pos + 1);
     }
 }
 
-} // anonymous namespace
-
-LineView::Iterator::Iterator(std::string_view remaining)
-    : remaining_(remaining) {
-    advance_split(remaining_, line_, '\n');
-}
-
 LineView::Iterator& LineView::Iterator::operator++() {
-    advance_split(remaining_, line_, '\n');
+    if (remaining_.data() == nullptr) {
+        // Already at end — clear line_ to match end sentinel
+        line_ = {};
+    } else {
+        const auto pos = remaining_.find('\n');
+        if (pos == std::string_view::npos) {
+            line_ = remaining_;
+            remaining_ = {};
+        } else {
+            line_ = remaining_.substr(0, pos);
+            remaining_ = remaining_.substr(pos + 1);
+        }
+    }
     return *this;
 }
 
@@ -106,12 +146,33 @@ LineView lines(std::string_view input) {
 }
 
 SplitView::Iterator::Iterator(std::string_view remaining, char delim)
-    : remaining_(remaining), delim_(delim) {
-    advance_split(remaining_, segment_, delim_);
+    : remaining_(remaining), delim_(delim), segment_() {
+    if (remaining.data() == nullptr) {
+        return;
+    }
+    const auto pos = remaining.find(delim_);
+    if (pos == std::string_view::npos) {
+        segment_ = remaining;
+        remaining_ = {};
+    } else {
+        segment_ = remaining.substr(0, pos);
+        remaining_ = remaining.substr(pos + 1);
+    }
 }
 
 SplitView::Iterator& SplitView::Iterator::operator++() {
-    advance_split(remaining_, segment_, delim_);
+    if (remaining_.data() == nullptr) {
+        segment_ = {};
+    } else {
+        const auto pos = remaining_.find(delim_);
+        if (pos == std::string_view::npos) {
+            segment_ = remaining_;
+            remaining_ = {};
+        } else {
+            segment_ = remaining_.substr(0, pos);
+            remaining_ = remaining_.substr(pos + 1);
+        }
+    }
     return *this;
 }
 

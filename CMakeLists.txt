@@ -11,30 +11,86 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(SIMDTEXT_BENCHMARKS "Build benchmarks" OFF)
 option(SIMDTEXT_USE_HIGHWAY "Enable SIMD via Google Highway" ON)
 option(SIMDTEXT_BUILD_CLI "Build the simdtext CLI tool" ON)
+option(SIMDTEXT_SANITIZER "Enable sanitizer (address or undefined)" "")
+option(SIMDTEXT_COVERAGE "Enable code coverage with gcov/lcov" OFF)
+
+# ── Sanitizer ───────────────────────────────────────────────
+
+if(SIMDTEXT_SANITIZER)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        message(WARNING "Sanitizers are only supported on GCC and Clang")
+        set(SIMDTEXT_SANITIZER "")
+    else()
+        set(_san_flags "")
+        if(SIMDTEXT_SANITIZER STREQUAL "address")
+            set(_san_flags -fsanitize=address -fno-omit-frame-pointer)
+        elseif(SIMDTEXT_SANITIZER STREQUAL "undefined")
+            set(_san_flags -fsanitize=undefined -fno-omit-frame-pointer -fno-sanitize-recover=all)
+        elseif(SIMDTEXT_SANITIZER STREQUAL "address,undefined" OR SIMDTEXT_SANITIZER STREQUAL "undefined,address")
+            set(_san_flags -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all)
+        else()
+            message(WARNING "Unknown sanitizer: ${SIMDTEXT_SANITIZER}. Expected: address, undefined, or address,undefined")
+            set(SIMDTEXT_SANITIZER "")
+        endif()
+        if(_san_flags)
+            add_compile_options(${_san_flags})
+            add_link_options(${_san_flags})
+            message(STATUS "Sanitizer enabled: ${SIMDTEXT_SANITIZER}")
+        endif()
+    endif()
+endif()
+
+# ── Coverage ────────────────────────────────────────────────
+
+if(SIMDTEXT_COVERAGE)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        message(WARNING "Coverage is only supported on GCC and Clang")
+        set(SIMDTEXT_COVERAGE OFF)
+    else()
+        add_compile_options(--coverage -g -O0)
+        add_link_options(--coverage)
+        message(STATUS "Coverage enabled")
+    endif()
+endif()
 
 # ── Highway (SIMD) ─────────────────────────────────────────
 
 if(SIMDTEXT_USE_HIGHWAY)
-    set(HWY_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/deps/highway")
-    if(EXISTS "${HWY_ROOT}/CMakeLists.txt")
-        set(HWY_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
-        set(HWY_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
-        set(HWY_ENABLE_CONTRIB OFF CACHE BOOL "" FORCE)
-        add_subdirectory(${HWY_ROOT} deps/highway-build EXCLUDE_FROM_ALL)
+    # Try find_package first, then fall back to bundled subtree
+    find_package(hwy QUIET CONFIG)
+    if(hwy_FOUND)
+        message(STATUS "Highway found via find_package: ${hwy_DIR}")
         add_compile_definitions(SIMDTEXT_HAVE_HWY)
     else()
-        message(WARNING "Highway not found at ${HWY_ROOT}. Building without SIMD.")
-        set(SIMDTEXT_USE_HIGHWAY OFF)
+        set(HWY_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/deps/highway")
+        if(EXISTS "${HWY_ROOT}/CMakeLists.txt")
+            set(HWY_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+            set(HWY_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
+            set(HWY_ENABLE_CONTRIB OFF CACHE BOOL "" FORCE)
+            add_subdirectory(${HWY_ROOT} deps/highway-build EXCLUDE_FROM_ALL)
+            add_compile_definitions(SIMDTEXT_HAVE_HWY)
+        else()
+            message(WARNING "Highway not found (no find_package result and no deps/highway). Building without SIMD.")
+            set(SIMDTEXT_USE_HIGHWAY OFF)
+        endif()
     endif()
 endif()
 
 # ── Library ─────────────────────────────────────────────────
+
+# ── Intrinsics source files (always compiled, but with per-file flags) ──
+set(SIMDTEXT_INTRINSIC_SOURCES
+    src/detail/cpu_detect.cpp
+    src/detail/simd_dispatch.cpp
+    src/detail/simd_scalar.cpp
+)
 
 set(SIMDTEXT_SOURCES
     src/scalar/scalar.cpp
     src/encode/encode.cpp
     src/url/url.cpp
     src/file/file.cpp
+    ${SIMDTEXT_INTRINSIC_SOURCES}
 )
 
 if(SIMDTEXT_USE_HIGHWAY)
@@ -43,14 +99,42 @@ endif()
 
 add_library(simdtext ${SIMDTEXT_SOURCES})
 
+# ── SSE2 intrinsics object (compiled with -msse2) ─────────
+add_library(simdtext_sse2 OBJECT src/detail/simd_sse2.cpp)
+target_include_directories(simdtext_sse2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(simdtext_sse2 PRIVATE -msse2 -mno-avx)
+elseif(MSVC)
+    target_compile_options(simdtext_sse2 PRIVATE /arch:SSE2)
+endif()
+target_link_libraries(simdtext PRIVATE simdtext_sse2)
+
+# ── AVX2 intrinsics object (compiled with -mavx2) ─────────
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag("-mavx2 -mbmi -mlzcnt" COMPILER_SUPPORTS_AVX2)
+if(COMPILER_SUPPORTS_AVX2)
+    add_library(simdtext_avx2 OBJECT src/detail/simd_avx2.cpp)
+    target_include_directories(simdtext_avx2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(simdtext_avx2 PRIVATE -mavx2 -mbmi -mlzcnt -mpopcnt)
+    elseif(MSVC)
+        target_compile_options(simdtext_avx2 PRIVATE /arch:AVX2)
+    endif()
+    target_link_libraries(simdtext PRIVATE simdtext_avx2)
+endif()
+
 target_include_directories(simdtext PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
 
 if(SIMDTEXT_USE_HIGHWAY)
-    target_link_libraries(simdtext PRIVATE hwy)
-    target_include_directories(simdtext PRIVATE ${HWY_ROOT} ${CMAKE_CURRENT_SOURCE_DIR})
+    if(hwy_FOUND)
+        target_link_libraries(simdtext PRIVATE hwy::hwy)
+    else()
+        target_link_libraries(simdtext PRIVATE hwy)
+        target_include_directories(simdtext PRIVATE ${HWY_ROOT} ${CMAKE_CURRENT_SOURCE_DIR})
+    endif()
 endif()
 
 # Compiler warnings
@@ -75,6 +159,8 @@ add_executable(test_simdtext
 )
 target_include_directories(test_simdtext PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 target_link_libraries(test_simdtext PRIVATE simdtext)
+enable_testing()
+add_test(NAME simdtext_tests COMMAND test_simdtext)
 
 # ── CLI tool ────────────────────────────────────────────────
 
@@ -82,7 +168,11 @@ if(SIMDTEXT_BUILD_CLI)
     add_executable(simdtext-cli cli/main.cpp)
     target_link_libraries(simdtext-cli PRIVATE simdtext)
     if(SIMDTEXT_USE_HIGHWAY)
-        target_link_libraries(simdtext-cli PRIVATE hwy)
+        if(hwy_FOUND)
+            target_link_libraries(simdtext-cli PRIVATE hwy::hwy)
+        else()
+            target_link_libraries(simdtext-cli PRIVATE hwy)
+        endif()
     endif()
     set_target_properties(simdtext-cli PROPERTIES OUTPUT_NAME simdtext)
 endif()
@@ -90,22 +180,62 @@ endif()
 # ── Benchmark (optional) ───────────────────────────────────
 
 if(SIMDTEXT_BENCHMARKS)
-    find_package(benchmark REQUIRED)
-    add_executable(bench_core benchmarks/bench_core.cpp)
-    target_link_libraries(bench_core PRIVATE simdtext benchmark::benchmark)
-    if(SIMDTEXT_USE_HIGHWAY)
-        target_link_libraries(bench_core PRIVATE hwy)
+    find_package(benchmark QUIET)
+    if(NOT benchmark_FOUND)
+        message(STATUS "Google Benchmark not found — benchmarks disabled. Install with: pip install benchmark || conan install benchmark")
+        set(SIMDTEXT_BENCHMARKS OFF)
+    else()
+        # Optional: simdutf for UTF-8 validation comparison
+        find_package(simdutf QUIET CONFIG)
+        if(simdutf_FOUND)
+            message(STATUS "simdutf found — UTF-8 validation comparison enabled")
+        else()
+            message(STATUS "simdutf not found — UTF-8 validation comparison disabled")
+        endif()
+
+        add_executable(bench_core benchmarks/bench_core.cpp)
+        target_link_libraries(bench_core PRIVATE simdtext benchmark::benchmark)
+        if(SIMDTEXT_USE_HIGHWAY)
+            if(hwy_FOUND)
+                target_link_libraries(bench_core PRIVATE hwy::hwy)
+            else()
+                target_link_libraries(bench_core PRIVATE hwy)
+            endif()
+        endif()
+        if(simdutf_FOUND)
+            target_compile_definitions(bench_core PRIVATE SIMDTEXT_HAVE_SIMDUTF)
+            target_link_libraries(bench_core PRIVATE simdutf::simdutf)
+        endif()
     endif()
 endif()
+
+# ── C API ──────────────────────────────────────────────────
+
+add_library(simdtext_c src/c/c_api.cpp)
+target_include_directories(simdtext_c PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(simdtext_c PRIVATE simdtext)
+set_target_properties(simdtext_c PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON)
 
 # ── Install ─────────────────────────────────────────────────
 
 include(GNUInstallDirs)
 
-install(TARGETS simdtext
+install(TARGETS simdtext simdtext_c simdtext_sse2
+    EXPORT simdtext-targets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+
+if(COMPILER_SUPPORTS_AVX2)
+    install(TARGETS simdtext_avx2
+        EXPORT simdtext-targets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    )
+endif()
 
 install(DIRECTORY include/simdtext
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
@@ -114,3 +244,31 @@ install(DIRECTORY include/simdtext
 if(SIMDTEXT_BUILD_CLI)
     install(TARGETS simdtext-cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
+
+# ── CMake package config ───────────────────────────────────
+
+include(CMakePackageConfigHelpers)
+
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/simdtext-config-version.cmake"
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+
+install(EXPORT simdtext-targets
+    FILE simdtext-targets.cmake
+    NAMESPACE simdtext::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/simdtext
+)
+
+configure_package_config_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/simdtext-config.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/simdtext-config.cmake"
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/simdtext
+)
+
+install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/simdtext-config.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/simdtext-config-version.cmake"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/simdtext
+)

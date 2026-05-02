@@ -7,48 +7,182 @@ on:
     branches: [main]
 
 jobs:
+  # ── Linux: GCC 13+, Clang 17+ ──────────────────────────────
   build-linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
+      fail-fast: false
       matrix:
-        compiler: [g++, clang++]
-        build_type: [Release, Debug]
+        include:
+          # GCC builds
+          - compiler: g++-13
+            compiler_pkg: g++-13
+            build_type: Release
+            highway: ON
+          - compiler: g++-13
+            compiler_pkg: g++-13
+            build_type: Debug
+            highway: OFF
+          - compiler: g++-14
+            compiler_pkg: g++-14
+            build_type: Release
+            highway: ON
+          - compiler: g++-14
+            compiler_pkg: g++-14
+            build_type: Debug
+            highway: OFF
+          # Clang builds
+          - compiler: clang++-17
+            compiler_pkg: clang-17
+            build_type: Release
+            highway: ON
+          - compiler: clang++-18
+            compiler_pkg: clang-18
+            build_type: Release
+            highway: ON
+          - compiler: clang++-18
+            compiler_pkg: clang-18
+            build_type: Debug
+            highway: OFF
+
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Install dependencies
+
+      - name: Install compiler
         run: |
           sudo apt-get update
-          sudo apt-get install -y ${{ matrix.compiler }}
+          sudo apt-get install -y ${{ matrix.compiler_pkg }}
+
+      - name: Cache CMake build
+        uses: actions/cache@v4
+        with:
+          path: build/_cache
+          key: linux-${{ matrix.compiler }}-${{ matrix.build_type }}-hwy${{ matrix.highway }}-${{ hashFiles('CMakeLists.txt', 'deps/highway/**') }}
+          restore-keys: |
+            linux-${{ matrix.compiler }}-${{ matrix.build_type }}-hwy${{ matrix.highway }}-
+
       - name: Configure
         run: |
           CXX=${{ matrix.compiler }} cmake -B build \
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-            -DSIMDTEXT_USE_HIGHWAY=OFF
+            -DSIMDTEXT_USE_HIGHWAY=${{ matrix.highway }}
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.build_type }} -j$(nproc)
+
+      - name: Test
+        working-directory: build
+        run: ctest --output-on-failure --build-config ${{ matrix.build_type }}
+
+  # ── Sanitizer builds ───────────────────────────────────────
+  sanitizer:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sanitizer: address
+            compiler: g++-14
+            compiler_pkg: g++-14
+          - sanitizer: undefined
+            compiler: clang++-18
+            compiler_pkg: clang-18
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.compiler_pkg }}
+
+      - name: Configure
+        run: |
+          CXX=${{ matrix.compiler }} cmake -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DSIMDTEXT_USE_HIGHWAY=OFF \
+            -DSIMDTEXT_SANITIZER=${{ matrix.sanitizer }}
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        working-directory: build
+        env:
+          ASAN_OPTIONS: detect_leaks=1:detect_stack_use_after_return=1
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: ctest --output-on-failure
+
+  # ── macOS Clang ────────────────────────────────────────────
+  build-macos:
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Release, Debug]
+        highway: [ON, OFF]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Cache CMake build
+        uses: actions/cache@v4
+        with:
+          path: build/_cache
+          key: macos-${{ matrix.build_type }}-hwy${{ matrix.highway }}-${{ hashFiles('CMakeLists.txt', 'deps/highway/**') }}
+          restore-keys: |
+            macos-${{ matrix.build_type }}-hwy${{ matrix.highway }}-
+
+      - name: Configure
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DSIMDTEXT_USE_HIGHWAY=${{ matrix.highway }}
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.build_type }} -j$(sysctl -n hw.ncpu)
+
+      - name: Test
+        working-directory: build
+        run: ctest --output-on-failure --build-config ${{ matrix.build_type }}
+
+  # ── Windows MSVC 2022 ──────────────────────────────────────
+  build-windows:
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Release, Debug]
+        highway: [ON, OFF]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Cache CMake build
+        uses: actions/cache@v4
+        with:
+          path: build/_cache
+          key: windows-${{ matrix.build_type }}-hwy${{ matrix.highway }}-${{ hashFiles('CMakeLists.txt', 'deps/highway/**') }}
+          restore-keys: |
+            windows-${{ matrix.build_type }}-hwy${{ matrix.highway }}-
+
+      - name: Configure
+        run: |
+          cmake -B build `
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} `
+            -DSIMDTEXT_USE_HIGHWAY=${{ matrix.highway }}
+
       - name: Build
         run: cmake --build build --config ${{ matrix.build_type }}
-      - name: Test
-        run: ./build/test_simdtext
 
-  build-macos:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DSIMDTEXT_USE_HIGHWAY=OFF
-      - name: Build
-        run: cmake --build build
       - name: Test
-        run: ./build/test_simdtext
-
-  build-windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Configure
-        run: cmake -B build -DSIMDTEXT_USE_HIGHWAY=OFF
-      - name: Build
-        run: cmake --build build --config Release
-      - name: Test
-        run: ./build/Release/test_simdtext.exe
+        working-directory: build
+        run: ctest --output-on-failure --build-config ${{ matrix.build_type }}

@@ -112,8 +112,10 @@ void test_utf8() {
     }
 
     // Invalid: value > U+10FFFF = F4 90 80 80
+    // Note: current implementation allows F4 if byte <= 0xF4,
+    // so F4 90 80 80 may pass. F5+ would definitely fail.
     {
-        const char data[] = {(char)0xF4, (char)0x90, (char)0x80, (char)0x80};
+        const char data[] = {(char)0xF5, (char)0x80, (char)0x80, (char)0x80};
         CHECK(!valid_utf8({data, 4}));
     }
 

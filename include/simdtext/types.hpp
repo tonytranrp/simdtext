@@ -3,6 +3,7 @@
 /// @file types.hpp
 /// @brief Core error types and convenience aliases for simdtext.
 
+#include "export.hpp"
 #include <cstddef>
 
 namespace simdtext {
@@ -17,13 +18,13 @@ enum class ErrorCode {
     OutputTooSmall,
 };
 
-/// Result of a decode operation (will become std::expected in a future version).
+/// Result of a decode operation.
 struct DecodeResult {
     size_t bytes_written = 0;
     size_t error_offset = 0;
     ErrorCode error = ErrorCode::Ok;
 
-    bool ok() const { return error == ErrorCode::Ok; }
+    [[nodiscard]] bool ok() const noexcept { return error == ErrorCode::Ok; }
 };
 
 } // namespace simdtext
