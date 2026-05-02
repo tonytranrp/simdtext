@@ -37,12 +37,24 @@ inline bool swar_is_ascii(uint64_t v) {
 
 // SWAR range mask: set 0x80 in each byte position where byte is in [lo, hi]
 inline uint64_t swar_range_mask(uint64_t v, uint8_t lo, uint8_t hi) {
+    // Standard SWAR range check that suppresses inter-byte borrows.
+    // A byte is in [lo, hi] if (byte - lo) <= (hi - lo).
+    // We must suppress borrows between bytes in the subtraction.
     const uint64_t lo_rep = lo * 0x0101010101010101ULL;
     const uint64_t range = static_cast<uint64_t>(hi - lo);
-    uint64_t sub = v - lo_rep;
-    uint64_t adj = sub + (255 - range) * 0x0101010101010101ULL;
-    uint64_t in_range = adj & 0x8080808080808080ULL;
-    return in_range;
+    // Set top bit of each byte: this detects borrows
+    const uint64_t top_bits = v & 0x8080808080808080ULL;
+    // Subtract lo from each byte; borrows will corrupt top bits
+    // but we track them via top_bits
+    const uint64_t sub = v - lo_rep;
+    // Clear top bits from sub (they may be corrupted by borrows)
+    const uint64_t sub_clean = sub & 0x7F7F7F7F7F7F7F7FULL;
+    // A byte is in range if sub_clean <= range * 0x01...
+    // which is equivalent to sub_clean + (255 - range) * 0x01... having bit 7 set
+    const uint64_t adj = sub_clean + (0x7F - range) * 0x0101010101010101ULL;
+    // Also check original top bits — if they were set, byte >= 128 which is > hi
+    const uint64_t in_range = adj & 0x8080808080808080ULL;
+    return in_range & ~top_bits;
 }
 } // anonymous namespace
 
