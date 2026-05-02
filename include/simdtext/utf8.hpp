@@ -13,6 +13,17 @@ namespace simdtext {
 /// Validate UTF-8 encoding.
 SIMDTEXT_NODISCARD SIMDTEXT_API bool valid_utf8(std::span<const char> input);
 
+/// UTF-8 validation result with error location.
+struct Utf8Result {
+    bool valid = true;           ///< true if valid UTF-8
+    size_t error_offset = 0;     ///< Byte offset of first error (0 if valid)
+    uint8_t error_byte = 0;      ///< The invalid byte at error_offset
+    std::string_view error_desc; ///< Human-readable error description
+};
+
+/// Validate UTF-8 and return detailed error information.
+SIMDTEXT_NODISCARD SIMDTEXT_API Utf8Result validate_utf8_detailed(std::string_view input) noexcept;
+
 /// Streaming UTF-8 validator for chunked input.
 /// Handles state across chunk boundaries for multi-byte sequences.
 class SIMDTEXT_API Utf8Validator {

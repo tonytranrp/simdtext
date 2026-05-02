@@ -253,4 +253,43 @@ void test_utf8() {
         CHECK_EQ(utf8_length("hello"), 5u);
         CHECK_EQ(utf8_length("\xC2\xA5\xC2\xA5"), 2u);
     }
+
+    // validate_utf8_detailed — valid input
+    {
+        auto r = validate_utf8_detailed("hello");
+        CHECK(r.valid);
+        CHECK_EQ(r.error_offset, 0u);
+    }
+
+    // validate_utf8_detailed — invalid continuation byte
+    {
+        const char data[] = {(char)0x80};
+        auto r = validate_utf8_detailed(std::string_view(data, 1));
+        CHECK(!r.valid);
+        CHECK_EQ(r.error_offset, 0u);
+    }
+
+    // validate_utf8_detailed — overlong 2-byte
+    {
+        const char data[] = {(char)0xC0, (char)0x80};
+        auto r = validate_utf8_detailed(std::string_view(data, 2));
+        CHECK(!r.valid);
+        CHECK_EQ(r.error_offset, 0u);
+    }
+
+    // validate_utf8_detailed — surrogate
+    {
+        const char data[] = {(char)0xED, (char)0xA0, (char)0x80};
+        auto r = validate_utf8_detailed(std::string_view(data, 3));
+        CHECK(!r.valid);
+        CHECK_EQ(r.error_offset, 0u);
+    }
+
+    // validate_utf8_detailed — incomplete sequence
+    {
+        const char data[] = {(char)0xC2};
+        auto r = validate_utf8_detailed(std::string_view(data, 1));
+        CHECK(!r.valid);
+        CHECK_EQ(r.error_offset, 0u);
+    }
 }

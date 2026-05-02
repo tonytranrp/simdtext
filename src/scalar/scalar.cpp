@@ -242,4 +242,118 @@ size_t utf8_length(std::string_view input) noexcept {
     return count_code_points(input);
 }
 
+Utf8Result validate_utf8_detailed(std::string_view input) noexcept {
+    Utf8Result result;
+    if (input.empty()) return result;
+
+    size_t i = 0;
+    while (i < input.size()) {
+        auto byte = static_cast<uint8_t>(input[i]);
+
+        if (byte < 0x80) {
+            // ASCII — valid
+            ++i;
+            continue;
+        }
+
+        size_t seq_len = 0;
+        uint32_t codepoint = 0;
+
+        if ((byte & 0xE0) == 0xC0) {
+            seq_len = 2;
+            codepoint = byte & 0x1F;
+        } else if ((byte & 0xF0) == 0xE0) {
+            seq_len = 3;
+            codepoint = byte & 0x0F;
+        } else if ((byte & 0xF8) == 0xF0) {
+            seq_len = 4;
+            codepoint = byte & 0x07;
+        } else {
+            result.valid = false;
+            result.error_offset = i;
+            result.error_byte = byte;
+            result.error_desc = (byte >= 0x80 && byte <= 0xBF)
+                ? "unexpected continuation byte"
+                : (byte >= 0xF5) ? "byte exceeds U+10FFFF" : "invalid UTF-8 lead byte";
+            return result;
+        }
+
+        // Check for overlong encodings and incomplete sequences
+        if (i + seq_len > input.size()) {
+            result.valid = false;
+            result.error_offset = i;
+            result.error_byte = byte;
+            result.error_desc = "incomplete multi-byte sequence";
+            return result;
+        }
+
+        // Read continuation bytes
+        for (size_t j = 1; j < seq_len; ++j) {
+            auto cb = static_cast<uint8_t>(input[i + j]);
+            if ((cb & 0xC0) != 0x80) {
+                result.valid = false;
+                result.error_offset = i + j;
+                result.error_byte = cb;
+                result.error_desc = "expected continuation byte";
+                return result;
+            }
+            codepoint = (codepoint << 6) | (cb & 0x3F);
+        }
+
+        // Check overlong encodings
+        if (seq_len == 2 && codepoint < 0x80) {
+            result.valid = false;
+            result.error_offset = i;
+            result.error_byte = byte;
+            result.error_desc = "overlong 2-byte sequence";
+            return result;
+        }
+        if (seq_len == 3 && codepoint < 0x800) {
+            result.valid = false;
+            result.error_offset = i;
+            result.error_byte = byte;
+            result.error_desc = "overlong 3-byte sequence";
+            return result;
+        }
+        if (seq_len == 4 && codepoint < 0x10000) {
+            result.valid = false;
+            result.error_offset = i;
+            result.error_byte = byte;
+            result.error_desc = "overlong 4-byte sequence";
+            return result;
+        }
+
+        // Check surrogates (U+D800..U+DFFF)
+        if (codepoint >= 0xD800 && codepoint <= 0xDFFF) {
+            result.valid = false;
+            result.error_offset = i;
+            result.error_byte = byte;
+            result.error_desc = "UTF-8 encoded surrogate";
+            return result;
+        }
+
+        // Check > U+10FFFF
+        if (codepoint > 0x10FFFF) {
+            result.valid = false;
+            result.error_offset = i;
+            result.error_byte = byte;
+            result.error_desc = "codepoint exceeds U+10FFFF";
+            return result;
+        }
+
+        // Check 0xF4 range (U+10FFFF max)
+        if (byte == 0xF4 && static_cast<uint8_t>(input[i + 1]) > 0x8F) {
+            result.valid = false;
+            result.error_offset = i;
+            result.error_byte = byte;
+            result.error_desc = "codepoint exceeds U+10FFFF";
+            return result;
+        }
+
+        i += seq_len;
+    }
+
+    return result;
+}
+
 } // namespace simdtext
