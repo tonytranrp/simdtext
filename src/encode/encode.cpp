@@ -31,12 +31,25 @@ static constexpr std::array<char, 16> hex_chars = {
     '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'
 };
 
+// Forward declarations — implementations in src/highway/simd_hwy.cpp
+#ifdef SIMDTEXT_HAVE_HWY
+size_t hex_encode_simd(const uint8_t* src, size_t src_size, char* dst);
+size_t base64_encode_to_hwym(const uint8_t* src, size_t src_size, char* dst);
+#endif
+
 size_t hex_encode_to(std::span<const std::byte> input, std::span<char> output) {
     const size_t required = input.size() * 2;
     if (output.size() < required) return 0;
 
     const auto* SIMDTEXT_RESTRICT src = reinterpret_cast<const uint8_t*>(input.data());
     auto* SIMDTEXT_RESTRICT dst = output.data();
+
+#ifdef SIMDTEXT_HAVE_HWY
+    if (input.size() >= 16) {
+        return hex_encode_simd(src, input.size(), dst);
+    }
+#endif
+
     size_t i = 0;
 
     // Process 4 bytes at a time for better ILP
