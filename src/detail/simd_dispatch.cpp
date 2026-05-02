@@ -13,7 +13,7 @@ const char* find_byte(const char* data, size_t size, char byte);
 bool validate_utf8(const char* data, size_t size);
 }
 
-// Forward declarations — x86 SSE2/AVX2 (only linked on x86)
+// Forward declarations — x86 SSE2/AVX2/AVX-512 (only linked on x86)
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 namespace sse2 {
 size_t count_byte(const char* data, size_t size, char byte);
@@ -35,7 +35,6 @@ bool validate_utf8(const char* data, size_t size);
 size_t count_code_points(const char* data, size_t size);
 }
 
-#if defined(__AVX512BW__)
 namespace avx512 {
 size_t count_byte(const char* data, size_t size, char byte);
 bool is_ascii(const char* data, size_t size);
@@ -43,7 +42,6 @@ void lowercase_ascii(char* data, size_t size);
 void uppercase_ascii(char* data, size_t size);
 const char* find_byte(const char* data, size_t size, char byte);
 }
-#endif
 #endif
 
 // Forward declarations — ARM NEON (only linked on ARM)
@@ -62,9 +60,7 @@ const char* find_byte(const char* data, size_t size, char byte);
 size_t count_byte_dispatch(const char* data, size_t size, char byte) {
     const auto& f = detect_cpu();
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-#if defined(__AVX512BW__)
     if (f.avx512bw) return avx512::count_byte(data, size, byte);
-#endif
     if (f.avx2)    return avx2::count_byte(data, size, byte);
     if (f.sse2)    return sse2::count_byte(data, size, byte);
 #elif defined(__aarch64__) || defined(__ARM_NEON)
@@ -76,9 +72,7 @@ size_t count_byte_dispatch(const char* data, size_t size, char byte) {
 bool is_ascii_dispatch(const char* data, size_t size) {
     const auto& f = detect_cpu();
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-#if defined(__AVX512BW__)
     if (f.avx512bw) return avx512::is_ascii(data, size);
-#endif
     if (f.avx2)    return avx2::is_ascii(data, size);
     if (f.sse2)    return sse2::is_ascii(data, size);
 #elif defined(__aarch64__) || defined(__ARM_NEON)
@@ -90,9 +84,7 @@ bool is_ascii_dispatch(const char* data, size_t size) {
 void lowercase_ascii_dispatch(char* data, size_t size) {
     const auto& f = detect_cpu();
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-#if defined(__AVX512BW__)
     if (f.avx512bw) return avx512::lowercase_ascii(data, size);
-#endif
     if (f.avx2)    return avx2::lowercase_ascii(data, size);
     if (f.sse2)    return sse2::lowercase_ascii(data, size);
 #elif defined(__aarch64__) || defined(__ARM_NEON)
@@ -104,9 +96,7 @@ void lowercase_ascii_dispatch(char* data, size_t size) {
 void uppercase_ascii_dispatch(char* data, size_t size) {
     const auto& f = detect_cpu();
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-#if defined(__AVX512BW__)
     if (f.avx512bw) return avx512::uppercase_ascii(data, size);
-#endif
     if (f.avx2)    return avx2::uppercase_ascii(data, size);
     if (f.sse2)    return sse2::uppercase_ascii(data, size);
 #elif defined(__aarch64__) || defined(__ARM_NEON)
@@ -118,9 +108,7 @@ void uppercase_ascii_dispatch(char* data, size_t size) {
 const char* find_byte_dispatch(const char* data, size_t size, char byte) {
     const auto& f = detect_cpu();
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-#if defined(__AVX512BW__)
     if (f.avx512bw) return avx512::find_byte(data, size, byte);
-#endif
     if (f.avx2)    return avx2::find_byte(data, size, byte);
     if (f.sse2)    return sse2::find_byte(data, size, byte);
 #elif defined(__aarch64__) || defined(__ARM_NEON)

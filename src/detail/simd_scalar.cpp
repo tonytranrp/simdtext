@@ -36,25 +36,37 @@ inline bool swar_is_ascii(uint64_t v) {
 }
 
 // SWAR range mask: set 0x80 in each byte position where byte is in [lo, hi]
+// Uses the standard borrow-free SWAR technique:
+//   1. Subtract lo from each byte with borrows suppressed (half-adder trick)
+//   2. Check if (byte - lo) <= (hi - lo) via the classic ">= threshold" test
+// Ref: https://graphics.stanford.edu/~seander/bithacks.html#HasLessInWord
 inline uint64_t swar_range_mask(uint64_t v, uint8_t lo, uint8_t hi) {
-    // Standard SWAR range check that suppresses inter-byte borrows.
-    // A byte is in [lo, hi] if (byte - lo) <= (hi - lo).
-    // We must suppress borrows between bytes in the subtraction.
     const uint64_t lo_rep = lo * 0x0101010101010101ULL;
     const uint64_t range = static_cast<uint64_t>(hi - lo);
-    // Set top bit of each byte: this detects borrows
-    const uint64_t top_bits = v & 0x8080808080808080ULL;
-    // Subtract lo from each byte; borrows will corrupt top bits
-    // but we track them via top_bits
-    const uint64_t sub = v - lo_rep;
-    // Clear top bits from sub (they may be corrupted by borrows)
-    const uint64_t sub_clean = sub & 0x7F7F7F7F7F7F7F7FULL;
-    // A byte is in range if sub_clean <= range * 0x01...
-    // which is equivalent to sub_clean + (255 - range) * 0x01... having bit 7 set
-    const uint64_t adj = sub_clean + (0x7F - range) * 0x0101010101010101ULL;
-    // Also check original top bits — if they were set, byte >= 128 which is > hi
-    const uint64_t in_range = adj & 0x8080808080808080ULL;
-    return in_range & ~top_bits;
+
+    // Step 1: subtract lo from each byte, suppressing inter-byte borrows.
+    // Half-adder: sum = a ^ b, carry = a & b. We split v into low/high bits
+    // so that no carry can propagate across byte boundaries.
+    const uint64_t v_lo = v & 0x0101010101010101ULL;  // bit 0 of each byte
+    const uint64_t lo_lo = lo_rep & 0x0101010101010101ULL;
+    const uint64_t v_hi = v ^ v_lo;  // bits 1-7 of each byte
+    const uint64_t lo_hi = lo_rep ^ lo_lo;
+
+    const uint64_t borrow = ((~v_hi & lo_hi) | (~(v_hi ^ lo_hi) & (v_lo & ~lo_lo)))
+                            & 0x8080808080808080ULL;
+    const uint64_t diff_lo = (v_lo ^ lo_lo) & 0x0101010101010101ULL;
+    const uint64_t diff_hi = (v_hi ^ lo_hi) ^ borrow;
+    const uint64_t diff = diff_hi | diff_lo;  // (byte - lo) per byte, no inter-byte borrows
+
+    // Step 2: check if diff <= range per byte.
+    // A byte d is <= range iff (d + ~range) has bit 7 clear (no carry into bit 8).
+    // But we need "bit 7 set" to indicate in-range, so we use the complement:
+    //   d <= range  <=>  (d + (0x7F - range)) has bit 7 set
+    const uint64_t range_adj = (0x7F - range) * 0x0101010101010101ULL;
+    const uint64_t cmp = diff + range_adj;
+
+    // Bytes with bit 7 set in cmp are in [lo, hi]
+    return cmp & 0x8080808080808080ULL;
 }
 } // anonymous namespace
 

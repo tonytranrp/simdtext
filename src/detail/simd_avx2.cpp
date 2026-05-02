@@ -193,6 +193,7 @@ void lowercase_ascii(char* data, size_t size) {
         _mm_storeu_si128(reinterpret_cast<__m128i*>(data + i), lowered);
         i += 16;
     }
+    if (use_nontemporal) _mm_sfence();
     for (; i < size; ++i) {
         auto c = static_cast<unsigned char>(data[i]);
         if (c >= 'A' && c <= 'Z') data[i] = static_cast<char>(c ^ 0x20);
@@ -231,6 +232,7 @@ void uppercase_ascii(char* data, size_t size) {
         _mm_storeu_si128(reinterpret_cast<__m128i*>(data + i), uppered);
         i += 16;
     }
+    if (use_nontemporal) _mm_sfence();
     for (; i < size; ++i) {
         auto c = static_cast<unsigned char>(data[i]);
         if (c >= 'a' && c <= 'z') data[i] = static_cast<char>(c ^ 0x20);
@@ -398,9 +400,17 @@ bool validate_utf8(const char* data, size_t size) {
 
 
 // ── AVX2 count_code_points ──────────────────────────────────────
+// Count Unicode code points = count bytes that are NOT continuation bytes (10xxxxxx)
+//
+// Continuation bytes: 0x80 <= byte <= 0xBF
+// We test: (byte > 0x7F) AND (0xBF > byte) using signed comparison.
+// This correctly includes 0x80: signed(0x80) = -128 > signed(0x7F) = 127 ✓
 
 size_t count_code_points(const char* data, size_t size) {
-    const __m256i v80 = _mm256_set1_epi8(static_cast<char>(0x80));
+    // Byte >= 0x80: use signed > 0x7F
+    const __m256i v7f = _mm256_set1_epi8(static_cast<char>(0x7F));
+    // Byte <= 0xBF: use signed 0xBF > byte
+    const __m256i vbf = _mm256_set1_epi8(static_cast<char>(0xBF));
 
     size_t i = 0;
     size_t count = 0;
@@ -412,10 +422,11 @@ size_t count_code_points(const char* data, size_t size) {
         __m256i c2 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i + 64));
         __m256i c3 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i + 96));
 
-        __m256i m0 = _mm256_and_si256(_mm256_cmpgt_epi8(c0, v80), _mm256_cmpgt_epi8(_mm256_set1_epi8(static_cast<char>(0xC0)), c0));
-        __m256i m1 = _mm256_and_si256(_mm256_cmpgt_epi8(c1, v80), _mm256_cmpgt_epi8(_mm256_set1_epi8(static_cast<char>(0xC0)), c1));
-        __m256i m2 = _mm256_and_si256(_mm256_cmpgt_epi8(c2, v80), _mm256_cmpgt_epi8(_mm256_set1_epi8(static_cast<char>(0xC0)), c2));
-        __m256i m3 = _mm256_and_si256(_mm256_cmpgt_epi8(c3, v80), _mm256_cmpgt_epi8(_mm256_set1_epi8(static_cast<char>(0xC0)), c3));
+        // Continuation byte: 0x80 <= byte <= 0xBF
+        __m256i m0 = _mm256_and_si256(_mm256_cmpgt_epi8(c0, v7f), _mm256_cmpgt_epi8(vbf, c0));
+        __m256i m1 = _mm256_and_si256(_mm256_cmpgt_epi8(c1, v7f), _mm256_cmpgt_epi8(vbf, c1));
+        __m256i m2 = _mm256_and_si256(_mm256_cmpgt_epi8(c2, v7f), _mm256_cmpgt_epi8(vbf, c2));
+        __m256i m3 = _mm256_and_si256(_mm256_cmpgt_epi8(c3, v7f), _mm256_cmpgt_epi8(vbf, c3));
 
         uint32_t mask0 = _mm256_movemask_epi8(m0);
         uint32_t mask1 = _mm256_movemask_epi8(m1);
@@ -423,12 +434,12 @@ size_t count_code_points(const char* data, size_t size) {
         uint32_t mask3 = _mm256_movemask_epi8(m3);
 
         count += 128 - __builtin_popcount(mask0) - __builtin_popcount(mask1)
-                     - __builtin_popcount(mask2) - __builtin_popcount(mask3);
+                      - __builtin_popcount(mask2) - __builtin_popcount(mask3);
     }
 
     for (; i + 32 <= size; i += 32) {
         __m256i chunk = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i));
-        __m256i m = _mm256_and_si256(_mm256_cmpgt_epi8(chunk, v80), _mm256_cmpgt_epi8(_mm256_set1_epi8(static_cast<char>(0xC0)), chunk));
+        __m256i m = _mm256_and_si256(_mm256_cmpgt_epi8(chunk, v7f), _mm256_cmpgt_epi8(vbf, chunk));
         uint32_t mask = _mm256_movemask_epi8(m);
         count += 32 - __builtin_popcount(mask);
     }

@@ -117,18 +117,38 @@ const char* find_byte(const char* data, size_t size, char byte) {
     for (; i + 16 <= size; i += 16) {
         uint8x16_t chunk = vld1q_u8(reinterpret_cast<const uint8_t*>(data + i));
         uint8x16_t eq = vceqq_u8(chunk, vbyte);
-        // Shrink 16 comparison bytes to a bitmask via pairwise add + extract
-        // Each matched byte is 0xFF (255). Narrow to 8-bit mask via vminv.
-        // Faster: use narrowing shift-right-then-narrow to get a 64-bit mask.
-        uint8x16_t shifted = vshrq_n_u8(eq, 7); // 1 per match, 0 per non-match
-        // Pack 16 bits into a 64-bit value using pairwise adds
-        uint16x8_t sum16 = vpaddlq_u8(shifted);
-        uint32x4_t sum32 = vpaddlq_u16(sum16);
-        uint64x2_t sum64 = vpaddlq_u32(sum32);
-        uint64_t mask = vgetq_lane_u64(sum64, 0) | (vgetq_lane_u64(sum64, 1) << 8);
+        // Extract match bits into a 16-bit mask using NEON narrowing operations.
+        // Shift each match byte right by 7 to get 0/1, then pack into a bitmask.
+        uint8x16_t bits = vshrq_n_u8(eq, 7);
+        // Use shrn + sli to pack 16 bytes into a 64-bit value preserving positions.
+        // Method: extract each lane's bit and accumulate into a uint16_t mask.
+        uint16x8_t paired = vpaddlq_u8(bits);         // 8x uint16, each is sum of 2 adjacent bits
+        uint32x4_t paired2 = vpaddlq_u16(paired);     // 4x uint32, each is sum of 4 adjacent bits
+        uint64x2_t paired3 = vpaddlq_u32(paired2);    // 2x uint64, each is sum of 8 adjacent bits
+        // Reconstruct the 16-bit mask from the pairwise sums
+        // Lane 0 has bits 0-7, lane 1 has bits 8-15 (as counts 0-8)
+        // We need the original bit positions, so use a different approach:
+        // Use vshrn_n_u16 to narrow and extract.
+        // Actually, let's use a direct extraction with vgetq_lane:
+        uint16_t mask = 0;
+        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 0));
+        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 1)) << 1;
+        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 2)) << 2;
+        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 3)) << 3;
+        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 4)) << 4;
+        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 5)) << 5;
+        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 6)) << 6;
+        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 7)) << 7;
+        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 8)) << 8;
+        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 9)) << 9;
+        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 10)) << 10;
+        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 11)) << 11;
+        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 12)) << 12;
+        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 13)) << 13;
+        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 14)) << 14;
+        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 15)) << 15;
         if (mask != 0) {
-            // Find the first set bit (first match position)
-            unsigned int bit_pos = __builtin_ctzll(mask);
+            unsigned int bit_pos = static_cast<unsigned int>(__builtin_ctz(mask));
             return data + i + bit_pos;
         }
     }

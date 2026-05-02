@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(simdtext VERSION 0.1.0 LANGUAGES CXX)
+project(simdtext VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -155,7 +155,7 @@ if(SIMDTEXT_ARCH_X86)
     add_library(simdtext_sse2 OBJECT src/detail/simd_sse2.cpp)
     target_include_directories(simdtext_sse2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_options(simdtext_sse2 PRIVATE -msse2 -mssse3 -mno-avx)
+        target_compile_options(simdtext_sse2 PRIVATE -msse2 -mno-avx)
     elseif(MSVC)
         target_compile_options(simdtext_sse2 PRIVATE /arch:SSE2)
     endif()
@@ -206,12 +206,12 @@ target_include_directories(simdtext PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
-# Highway linkage — PUBLIC so consumers get it transitively
+# Highway linkage — PRIVATE so consumers don't inherit the dependency
 if(SIMDTEXT_USE_HIGHWAY)
     if(hwy_FOUND)
-        target_link_libraries(simdtext PUBLIC hwy::hwy)
+        target_link_libraries(simdtext PRIVATE hwy::hwy)
     else()
-        target_link_libraries(simdtext PUBLIC hwy)
+        target_link_libraries(simdtext PRIVATE hwy)
         target_include_directories(simdtext PRIVATE ${HWY_ROOT} ${CMAKE_CURRENT_SOURCE_DIR})
     endif()
 endif()
