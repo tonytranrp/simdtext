@@ -4,7 +4,6 @@
 /// @brief Parallel text processing using multiple threads.
 
 #include "export.hpp"
-#include "scan.hpp"
 #include <cstddef>
 #include <functional>
 #include <span>

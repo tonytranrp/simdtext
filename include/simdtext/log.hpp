@@ -4,8 +4,6 @@
 /// @brief Fast log file parsing and analysis.
 
 #include "export.hpp"
-#include "scan.hpp"
-#include <cstddef>
 #include <cstdint>
 #include <string_view>
 #include <vector>
