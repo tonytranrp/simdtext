@@ -126,10 +126,30 @@ bool parallel_valid_utf8(std::string_view data, const ParallelOptions& opts) {
         if (invalid.load(std::memory_order_relaxed)) break;
         const size_t start = t * chunk;
         const size_t end = (t == nthreads - 1) ? size : (t + 1) * chunk;
-        threads.emplace_back([&invalid, &data, start, end]() {
+        threads.emplace_back([&invalid, &data, start, end, t, chunk]() {
             if (invalid.load(std::memory_order_relaxed)) return;
+
+            // For the first thread, validate from 'start' directly.
+            // For subsequent threads, rewind 'start' backward to ensure we don't
+            // split a multi-byte UTF-8 sequence at a chunk boundary.
+            // We look back at most 3 bytes (max UTF-8 sequence length - 1).
+            size_t safe_start = start;
+            if (t > 0 && start > 0) {
+                // Back up to find the start of the UTF-8 sequence containing 'start'.
+                // A continuation byte has the pattern 10xxxxxx (0x80-0xBF).
+                // Scan backward until we find a non-continuation byte.
+                const auto* p = reinterpret_cast<const uint8_t*>(data.data());
+                size_t rewind = start;
+                const size_t max_rewind = (start >= 3) ? start - 3 : 0;
+                while (rewind > max_rewind &&
+                       (p[rewind] & 0xC0) == 0x80) {
+                    --rewind;
+                }
+                safe_start = rewind;
+            }
+
             bool result = valid_utf8(
-                std::span<const char>(data.data() + start, end - start));
+                std::span<const char>(data.data() + safe_start, end - safe_start));
             if (!result) invalid.store(true, std::memory_order_relaxed);
         });
     }

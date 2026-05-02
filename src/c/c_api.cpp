@@ -140,6 +140,11 @@ simdtext_file_t simdtext_file_open(const char* path) {
             delete f;
             return nullptr;
         }
+        // Also open the MappedFile so simdtext_file_data works
+        if (!f->mapped.open(path)) {
+            // MappedFile open failed; scanner data still available
+            // but file_data will return scanner's data instead
+        }
         return f;
     } catch (...) {
         return nullptr;
@@ -148,16 +153,14 @@ simdtext_file_t simdtext_file_open(const char* path) {
 
 void simdtext_file_close(simdtext_file_t file) {
     if (file) {
-        // Manually destruct since C callers can't call delete
-        file->~simdtext_file();
-        std::free(file);
+        delete file;
     }
 }
 
 const char* simdtext_file_data(simdtext_file_t file) {
     if (!file) return nullptr;
     auto v = file->mapped.view();
-    return v.data();
+    return v.empty() ? nullptr : v.data();
 }
 
 size_t simdtext_file_size(simdtext_file_t file) {
