@@ -1,28 +1,59 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to simdtext will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.1.0] - 2025-05-02
+## [0.2.0] - 2026-05-02
 
 ### Added
+- **Parallel processing** (`parallel.hpp`): `parallel_count_byte`, `parallel_is_ascii`, `parallel_count_newlines`, `parallel_find_byte`, `parallel_valid_utf8`, `parallel_for_each_chunk` — multi-threaded versions of core operations with `ParallelOptions` (configurable thread count, min chunk size)
+- **Pattern scanning** (`pattern.hpp`): `find_pattern` with wildcard support (`??`), `byte_pattern_parse`, `BytePattern` class — SIMD-accelerated byte pattern matching
+- **Hashing** (`hash.hpp`): `fnv1a` (constexpr), `SIMDTEXT_HASH` macro for switch-case string matching, `crc32` (software), `crc32c` (10.8 GB/s hardware), `xxhash64` (22 GB/s), `wyhash` (26 GB/s)
+- **String utilities** (`str.hpp`): `trim_left`/`trim_right`/`trim`, `replace_all` (char and substring), `fields` (whitespace split), `split_vec`/`split_into`, `starts_with`/`ends_with`, `contains_char`
+- **JSON tokenizer** (`json.hpp`): `JsonTokenizer` — zero-allocation pull-style tokenizer with all JSON types, `looks_like_json`, `is_json_number`, `json_unescape_inplace`
+- **CSV parser** (`csv.hpp`): `CsvParser` — row-by-row iteration with quoted fields, custom delimiters, `parse_csv_row` helper
+- **Diff utilities** (`diff.hpp`): `line_diff` (LCS-based), `count_diff_lines`, `text_equal`, `common_prefix_length`/`common_suffix_length`
+- **Log parser** (`log.hpp`): `parse_log_line`, `parse_log_level`, `count_log_levels`, `filter_log_lines` — structured log analysis
+- **UTF-8 streaming** (`utf8.hpp`): `Utf8Validator` class for chunk-by-chunk validation, `count_code_points`/`utf8_length`
+- **C API**: `simdtext_find_pattern`, `simdtext_byte_pattern_parse`, `simdtext_parallel_count_byte`
+- **AVX-512BW** build support and install rules
 
-- **Scanning** (`<simdtext/scan.hpp>`): `count_byte`, `count_newlines`, `contains`, `find_byte`
-- **ASCII** (`<simdtext/ascii.hpp>`): `is_ascii`, `lowercase_ascii_inplace`, `uppercase_ascii_inplace`, `trim_ascii`
-- **Lines & Splitting** (`<simdtext/lines.hpp>`): `LineView`, `SplitView`, `lines()`, `split()`
-- **Encoding** (`<simdtext/encode.hpp>`): `hex_encode`, `hex_encode_to`, `hex_decode`, `hex_decode_to`, `base64_encode`, `base64_encode_to`, `base64_decode`, `base64_decode_to`
-- **URL** (`<simdtext/url.hpp>`): `url_encode`, `url_encode_to`, `url_decode`, `url_decode_to`, `parse_query`
-- **UTF-8** (`<simdtext/utf8.hpp>`): `valid_utf8`
-- **File I/O** (`<simdtext/file.hpp>`): `MappedFile`, `FileScanner` with `each_line`, `each_line_containing`, `count_lines`, `count_matching`
-- **Types** (`<simdtext/types.hpp>`): `ErrorCode` enum, `DecodeResult` struct
-- **C API** (`<simdtext/c/simdtext.h>`): FFI-friendly bindings for scanning, ASCII, encoding, URL, UTF-8, and file operations
-- **CLI tool**: `simdtext stats`, `grep`, `count`, `lower`, `upper`, `hex-encode`, `base64-encode`, `url-decode`, `url-encode`, `validate-utf8`
-- **SIMD acceleration**: Google Highway (SSE2/AVX2/AVX-512/NEON) with hand-written SSE2/AVX2 intrinsics fallback
-- **CMake integration**: `add_subdirectory`, `find_package`, FetchContent, vcpkg support
-- **Tests**: Comprehensive test suite covering all modules
-- **Benchmarks**: Google Benchmark integration for core operations
-- **Documentation**: API reference, architecture guide, building guide, benchmark guide
+### Changed
+- **UTF-8 validation**: 3.4 GB/s → **32.4 GB/s** via SSE2 pshufb-based byte classification with proper runtime dispatch
+- **CRC32C**: 0.5 GB/s → **10.8 GB/s** via runtime SSE4.2 hardware dispatch (inline asm)
+- **count_code_points**: 5.6 GB/s → **8.4 GB/s** via SSE2 SIMD dispatch
+- **Scalar functions**: Fixed auto-vectorization to AVX-512 (added `no-tree-vectorize` attribute)
+- **Scalar is_ascii/count_byte**: 4x unrolled SWAR (32 bytes/iteration, single branch)
+- **AVX2 functions**: Added `no-avx512*` pragma targets to prevent instruction leakage
 
-[0.1.0]: https://github.com/tonytran-ai/simdtext/releases/tag/v0.1.0
+### Fixed
+- **hex_decode_to**: Accepted 'G'-'Z' as valid hex digits (values 16-35) — now properly rejects them
+- **url_decode**: `%GG` was incorrectly decoded — now checks `hi <= 15 && lo <= 15`
+- **hex_val()** in url.cpp: Returned values > 15 for non-hex alpha chars — fixed to return -1
+- **UTF-8 SIMD dispatch**: Was using compile-time `#if defined(__AVX2__)` which was never true — fixed to use runtime CPU detection
+- **CRC32C software fallback**: Table was truncated/incomplete — fixed with full 256-entry Castagnoli table
+- **cpu_detect.hpp**: Missing `#include <cstddef>` for `size_t`
+- **Header hygiene**: Added missing `SIMDTEXT_API` on all parallel functions, missing includes
+
+### Removed
+- Removed incomplete SSSE3 base64 SIMD (compile issues in non-SSSE3 object files)
+
+## [0.1.0] - 2026-05-02
+
+### Added
+- Initial release with core SIMD-accelerated operations
+- `count_byte`, `count_newlines`, `is_ascii`, `find_byte` (scan.hpp)
+- `lowercase_ascii_inplace`, `uppercase_ascii_inplace`, `trim_ascii` (ascii.hpp)
+- `LineView`, `SplitView`, `lines`, `split` (lines.hpp)
+- `hex_encode`/`decode`, `base64_encode`/`decode` (encode.hpp)
+- `url_encode`/`decode`, `parse_query` (url.hpp)
+- `valid_utf8` (utf8.hpp)
+- `MappedFile`, `FileScanner` (file.hpp)
+- C API (`c/simdtext.h`)
+- CLI tool: `simdtext stats`, `grep`, `count`, `lower`, `upper`, `validate-utf8`, etc.
+- Google Highway SIMD backend (SSE2 → AVX2 → AVX-512, NEON)
+- Hand-written SSE2/AVX2/AVX-512BW intrinsics
+- CMake build system with `add_subdirectory`, `find_package`, vcpkg support
+- Cross-platform CI (GCC, Clang, MSVC on Linux, macOS, Windows)
+- 163 tests, all passing

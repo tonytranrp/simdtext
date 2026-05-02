@@ -3,6 +3,10 @@
 #include <cstring>
 #include <algorithm>
 
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
+
 namespace simdtext {
 
 namespace {
@@ -112,17 +116,34 @@ bool text_equal(std::string_view a, std::string_view b) noexcept {
 size_t common_prefix_length(std::string_view a, std::string_view b) noexcept {
     size_t len = std::min(a.size(), b.size());
     size_t i = 0;
+
+#if defined(__SSE2__)
+    // Compare 16 bytes at a time using SSE2
+    for (; i + 16 <= len; i += 16) {
+        __m128i va = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a.data() + i));
+        __m128i vb = _mm_loadu_si128(reinterpret_cast<const __m128i*>(b.data() + i));
+        __m128i cmp = _mm_cmpeq_epi8(va, vb);
+        uint32_t mask = _mm_movemask_epi8(cmp);
+        if (mask != 0xFFFF) {
+            // Find first differing byte
+            unsigned int diff = ~mask;
+            return i + __builtin_ctz(diff);
+        }
+    }
+#endif
+
     // Compare 8 bytes at a time
-    while (i + 8 <= len) {
+    for (; i + 8 <= len; i += 8) {
         uint64_t va, vb;
         __builtin_memcpy(&va, a.data() + i, 8);
         __builtin_memcpy(&vb, b.data() + i, 8);
         if (va != vb) {
             // Find first differing byte
-            break;
+            uint64_t diff = va ^ vb;
+            return i + (__builtin_ctzll(diff) / 8);
         }
-        i += 8;
     }
+
     // Byte-by-byte for the rest
     while (i < len && a[i] == b[i]) ++i;
     return i;
