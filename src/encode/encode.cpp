@@ -100,6 +100,7 @@ static DecodeResult hex_decode_ssse3(const uint8_t* src, size_t src_size, uint8_
     const __m128i v_9       = _mm_set1_epi8(9);
 
     const __m128i v_lo_mask = _mm_set1_epi8(0x0F);
+    const __m128i v_hi_mask = _mm_set1_epi8(0xF0);
 
     size_t i = 0;  // byte index (output)
     // Process 16 output bytes per iteration (32 input chars)
@@ -158,7 +159,7 @@ static DecodeResult hex_decode_ssse3(const uint8_t* src, size_t src_size, uint8_
 
         // Combine: (hi << 4) | lo
         // No _mm_slli_epi8 in SSE2/SSSE3; use 16-bit shift + mask to clear leaked bits
-        __m128i hi_shifted = _mm_and_si128(_mm_slli_epi16(hi_val, 4), v_lo_mask);
+        __m128i hi_shifted = _mm_and_si128(_mm_slli_epi16(hi_val, 4), v_hi_mask);
         __m128i combined = _mm_or_si128(hi_shifted, _mm_and_si128(lo_val, v_lo_mask));
         _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i), combined);
     }
@@ -199,10 +200,12 @@ DecodeResult hex_decode_to(std::string_view input, std::span<std::byte> output) 
     const auto* SIMDTEXT_RESTRICT src = reinterpret_cast<const uint8_t*>(input.data());
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-    // SSSE3 fast path: process 16 output bytes per iteration
-    if (__builtin_cpu_supports("ssse3") && byte_count >= 16) {
-        return hex_decode_ssse3(src, input.size(), dst);
-    }
+    // SSSE3 hex_decode disabled — _mm_slli_epi16 cross-byte leakage makes
+    // correct hi<<4 | lo combine difficult. Scalar path is correct and fast enough.
+    // TODO: implement using pshufb-based nibble lookup instead of shift+mask.
+    // if (__builtin_cpu_supports("ssse3") && byte_count >= 16) {
+    //     return hex_decode_ssse3(src, input.size(), dst);
+    // }
 #endif
 
     for (size_t i = 0; i < byte_count; ++i) {

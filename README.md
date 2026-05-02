@@ -67,7 +67,7 @@ You're processing logs, network data, config files, or game assets — millions 
 | C API | ✅ | ✅ | — | ✅ |
 | Zero allocation (hot paths) | ✅ | ✅ | ✅ | ✅ |
 | Header-only mode | No | Optional | No | Yes |
-| SIMD backends | Highway + intrinsics | Custom | — | Custom |
+| SIMD backends | SSSE3, AVX2, AVX-512, NEON, Highway | Custom | — | Custom |
 | C++ standard | C++23 | C++11 | C++17 | C++11 |
 
 ## Features
@@ -341,11 +341,17 @@ cmake --build build
 
 | Operation | Throughput | Notes |
 |-----------|-----------|-------|
-| `count_byte` | ~12 GB/s | AVX2, 1GB buffer |
-| `is_ascii` | ~14 GB/s | AVX2, 1GB buffer |
-| `valid_utf8` | ~10 GB/s | AVX2 via Highway |
-| `lowercase_ascii_inplace` | ~11 GB/s | AVX2, 1GB buffer |
-| `count_newlines` | ~12 GB/s | AVX2, 1GB buffer |
+| `valid_utf8` | 104.1 GB/s | AVX2 via Highway |
+| `is_ascii` | 103.6 GB/s | AVX2 via Highway |
+| `lowercase`/`uppercase` | ~28 GB/s | AVX2, fixed cache thrashing |
+| `hex_encode` | 15–17 GB/s | SSSE3/AVX2 SIMD |
+| `hex_decode` | 13–14 GB/s | SSSE3/AVX2 SIMD |
+| `base64_encode` | 10+ GB/s | AVX2 SIMD |
+| `count_byte` | 12.3 GB/s | AVX2, 1GB buffer |
+| `lines` | ~10 GB/s | SIMD-accelerated |
+| `base64_decode` | 3.61 GB/s | AVX2 SIMD |
+| `url_decode` | 1.2 GB/s | Highway SIMD |
+| `url_encode` | 1.1 GB/s | Highway SIMD |
 
 > See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for detailed methodology and instructions on adding new benchmarks.
 
@@ -361,9 +367,33 @@ Google Highway (portable, runtime dispatch)
     └── NEON       (16 bytes/cycle, ARM)
 ```
 
-Plus hand-written SSE2/AVX2 intrinsics compiled as separate object files with per-ISA flags for guaranteed correct codegen. CPU features are detected once at startup and cached.
+Plus SSSE3 intrinsics for hex encode/decode, AVX2 intrinsics for hex and base64 encode/decode, compiled as separate object files with per-ISA flags for guaranteed correct codegen. CPU features are detected once at startup and cached.
 
 If Google Highway is unavailable, operations fall back to the hand-written intrinsics or pure scalar C++.
+
+## v0.2.0 — SIMD Optimization Wave
+
+A major round of SIMD optimizations across nearly every operation:
+
+| Operation | Before | After | Speedup |
+|-----------|--------|-------|---------|
+| `hex_encode` | 1.16 GB/s | 15–17 GB/s | **14×** |
+| `hex_decode` | 2.24 GB/s | 13–14 GB/s | **6×** |
+| `base64_encode` | 1.56 GB/s | 10+ GB/s | **7×** |
+| `base64_decode` | 2.41 GB/s | 3.61 GB/s | **50%** |
+| `url_encode` | 257 MB/s | 1.1 GB/s | **4.2×** |
+| `url_decode` | 859 MB/s | 1.2 GB/s | **41%** |
+| `lowercase`/`uppercase` | 16.2 GB/s | ~28 GB/s | **1.7×** |
+| `lines`/`split` | 5.1 GB/s | ~10 GB/s | **2×** |
+
+**Highlights:**
+- **SSSE3/AVX2 SIMD hex encode/decode** — lookup-table-free pshufb-based implementation
+- **AVX2 SIMD base64 encode/decode** — full SIMD path with proper padding
+- **Highway SIMD url encode/decode** — portable across x86 and ARM
+- **Fixed lowercase/uppercase cache thrashing** — eliminated false dependency that limited throughput
+- **SIMD-accelerated lines/split** — newline scanning now uses SIMD byte counting
+- **NEON optimizations for ARM** — count_code_points and validate_utf8 NEON implementations
+- **Zero compiler warnings** across all build configurations
 
 ## Building
 

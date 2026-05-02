@@ -53,3 +53,15 @@ Thumbs.db
 *.so
 *.out
 build2/
+build-bench/
+bench_missing
+BENCHMARK_baseline.txt
+
+# Internal working notes
+AUDIT_*.md
+CHANGE_*.md
+RESEARCH_*.md
+REPORT_*.md
+PLAN.md
+WORK_QUEUE.md
+MASTER_ACTION_PLAN.md

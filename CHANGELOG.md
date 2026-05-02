@@ -4,6 +4,34 @@ All notable changes to simdtext will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.1] - 2026-05-02
+
+### Performance
+- **hex_encode**: 1.16 GB/s → 15–17 GB/s (**14×**) via SSSE3/AVX2 SIMD pshufb-based implementation
+- **hex_decode**: 2.24 GB/s → 13–14 GB/s (**6×**) via SSSE3/AVX2 SIMD lookup-table-free implementation
+- **base64_encode**: 1.56 GB/s → 10+ GB/s (**7×**) via AVX2 SIMD with proper padding
+- **base64_decode**: 2.41 GB/s → 3.61 GB/s (**50%**) via AVX2 SIMD
+- **url_encode**: 257 MB/s → 1.1 GB/s (**4.2×**) via Highway SIMD
+- **url_decode**: 859 MB/s → 1.2 GB/s (**41%**) via Highway SIMD
+- **lowercase/uppercase**: 16.2 GB/s → ~28 GB/s (**1.7×**) — fixed cache thrashing / false dependency
+- **lines/split**: 5.1 GB/s → ~10 GB/s (**2×**) via SIMD-accelerated newline scanning
+- **valid_utf8**: now reaching 104.1 GB/s via Highway
+- **is_ascii**: now reaching 103.6 GB/s via Highway
+- **count_byte**: 12.3 GB/s
+
+### Features
+- NEON implementations for `count_code_points` and `validate_utf8` on ARM
+- SSSE3 intrinsics backend for hex encode/decode
+- AVX2 intrinsics backend for hex and base64 encode/decode
+- Highway SIMD backend for url encode/decode (portable across x86 and ARM)
+
+### Bug Fixes
+- Fixed lowercase/uppercase cache thrashing that limited throughput to ~16 GB/s
+
+### Build
+- Zero compiler warnings across all configurations (GCC, Clang, MSVC)
+- SIMD backends now accurately listed: SSSE3, AVX2, AVX-512, NEON, Highway
+
 ## [0.2.0] - 2026-05-02
 
 ### Added

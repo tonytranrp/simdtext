@@ -722,7 +722,7 @@ static size_t hex_encode_ssse3(const uint8_t* src, size_t src_size, char* dst) {
     alignas(16) static const uint8_t hex_lut[16] = {
         '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'
     };
-    alignas(16) static const uint8_t lo_mask_arr[16] = {0x0F};
+    alignas(16) static const uint8_t lo_mask_arr[16] = {0x0F,0x0F,0x0F,0x0F,0x0F,0x0F,0x0F,0x0F,0x0F,0x0F,0x0F,0x0F,0x0F,0x0F,0x0F,0x0F};
     static constexpr char hex_chars[16] = {
         '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'
     };

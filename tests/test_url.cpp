@@ -169,4 +169,86 @@ void test_url() {
         auto params = parse_query("?name=test");
         CHECK_EQ(params["name"], "test");
     }
+
+    // ── Additional URL edge cases ────────────────────────
+
+    // URL encode: all-safe characters (no encoding needed)
+    {
+        CHECK_EQ(url_encode("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~"),
+                  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~");
+    }
+
+    // URL encode: all-unsafe characters (everything encoded)
+    {
+        // String of all space characters
+        std::string s(5, ' ');
+        CHECK_EQ(url_encode(s), "%20%20%20%20%20");
+    }
+
+    // URL decode: Unicode multi-byte via %XX sequences (€ = U+20AC = 0xE2 0x82 0xAC in UTF-8)
+    {
+        auto result = url_decode("%E2%82%AC");
+        CHECK_EQ(result.size(), 3u);
+        CHECK_EQ((unsigned char)result[0], 0xE2);
+        CHECK_EQ((unsigned char)result[1], 0x82);
+        CHECK_EQ((unsigned char)result[2], 0xAC);
+    }
+
+    // URL decode: incomplete %XX at end of string (only %X)
+    {
+        CHECK_EQ(url_decode("test%F"), "test%F");
+    }
+
+    // URL decode: double %% at end
+    {
+        CHECK_EQ(url_decode("test%%"), "test%%");
+    }
+
+    // URL encode/decode roundtrip with all byte values
+    {
+        std::string s;
+        for (int i = 1; i < 256; i++) s += char(i); // skip 0 to avoid null issues in comparison
+        auto encoded = url_encode(s);
+        auto decoded = url_decode(encoded);
+        CHECK_EQ(decoded, s);
+    }
+
+    // URL encode: plus sign is encoded (not treated as space in encode)
+    {
+        auto result = url_encode("a+b");
+        // + should be encoded as %2B since it's not unreserved
+        CHECK_EQ(result, "a%2Bb");
+    }
+
+    // URL encode/decode SIMD boundary sizes
+    {
+        int sizes[] = {0, 1, 15, 16, 17, 31, 32, 33, 47, 48, 49, 63, 64, 65};
+        for (int n : sizes) {
+            std::string s(n, 'A');
+            auto encoded = url_encode(s);
+            auto decoded = url_decode(encoded);
+            CHECK_EQ(decoded, s);
+        }
+    }
+
+    // URL decode: %00 null byte (already tested above, but verify size)
+    {
+        auto result = url_decode("%00");
+        CHECK_EQ(result.size(), 1u);
+    }
+
+    // URL encode: newline character
+    {
+        CHECK_EQ(url_encode("\n"), "%0A");
+    }
+
+    // URL decode: lowercase hex digits
+    {
+        CHECK_EQ(url_decode("%2fpath"), "/path");
+    }
+
+    // URL encode: tab character
+    {
+        CHECK_EQ(url_encode("\t"), "%09");
+    }
 }
