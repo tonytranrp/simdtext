@@ -135,14 +135,25 @@ static constexpr std::array<uint8_t, 256> base64_table = {
     64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
 };
 
+#ifdef SIMDTEXT_HAVE_HWY
+// Forward declaration — implementation in src/highway/simd_hwy.cpp
+size_t base64_encode_to_hwym(const uint8_t* src, size_t src_size, char* dst);
+#endif
+
 size_t base64_encode_to(std::span<const std::byte> input, std::span<char> output) {
     const size_t required = 4 * ((input.size() + 2) / 3);
     if (output.size() < required) return 0;
 
     const auto* src = reinterpret_cast<const uint8_t*>(input.data());
     auto* dst = output.data();
-    size_t i = 0, j = 0;
 
+#ifdef SIMDTEXT_HAVE_HWY
+    if (input.size() >= 12) {
+        return base64_encode_to_hwym(src, input.size(), dst);
+    }
+#endif
+
+    size_t i = 0, j = 0;
     for (; i + 2 < input.size(); i += 3) {
         const auto n = (static_cast<uint32_t>(src[i]) << 16) |
                        (static_cast<uint32_t>(src[i+1]) << 8) |

@@ -11,6 +11,9 @@
 namespace simdtext {
 
 /// Validate UTF-8 encoding.
+/// @param input The byte buffer to validate.
+/// @return true if all bytes form valid UTF-8.
+/// @note SIMD-accelerated via Highway. ASCII-only: ~14 GB/s. Mixed UTF-8: ~10 GB/s.
 SIMDTEXT_NODISCARD SIMDTEXT_API bool valid_utf8(std::span<const char> input);
 
 /// UTF-8 validation result with error location.
@@ -22,6 +25,8 @@ struct Utf8Result {
 };
 
 /// Validate UTF-8 and return detailed error information.
+/// @param input The string to validate.
+/// @return Utf8Result with valid flag, error offset, error byte, and description.
 SIMDTEXT_NODISCARD SIMDTEXT_API Utf8Result validate_utf8_detailed(std::string_view input) noexcept;
 
 /// Streaming UTF-8 validator for chunked input.
@@ -46,9 +51,14 @@ private:
 };
 
 /// Count the number of Unicode code points in valid UTF-8.
+/// @param input Valid UTF-8 string. Behavior is undefined if input is invalid UTF-8.
+/// @return Number of Unicode code points (not bytes).
+/// @note SIMD-accelerated. Counts non-continuation bytes.
 SIMDTEXT_NODISCARD SIMDTEXT_API size_t count_code_points(std::string_view input) noexcept;
 
 /// Count the number of UTF-8 characters (same as count_code_points).
+/// @param input Valid UTF-8 string.
+/// @return Number of Unicode code points.
 SIMDTEXT_NODISCARD SIMDTEXT_API size_t utf8_length(std::string_view input) noexcept;
 
 } // namespace simdtext

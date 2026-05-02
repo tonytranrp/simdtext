@@ -31,6 +31,10 @@ const char* find_byte(const char* data, size_t size, char byte);
 }
 } // namespace detail
 
+#ifndef SIMDTEXT_HAVE_HWY
+// When Highway is available, these functions are provided by simd_hwy.cpp
+// which uses Highway's portable SIMD for better performance.
+
 size_t count_byte(std::span<const char> input, char byte) {
     if (input.empty()) return 0;
     const auto& f = detail::detect_cpu();
@@ -75,6 +79,8 @@ const char* find_byte(const char* begin, const char* end, char byte) {
     if (f.sse2)    return detail::sse2::find_byte(begin, size, byte);
     return detail::scalar::find_byte(begin, size, byte);
 }
+
+#endif // SIMDTEXT_HAVE_HWY
 
 // ── Contains ───────────────────────────────────────────────
 
@@ -184,10 +190,12 @@ SplitView split(std::string_view input, char delimiter) {
 
 // ── UTF-8 ──────────────────────────────────────────────────
 
+#ifndef SIMDTEXT_HAVE_HWY
 bool valid_utf8(std::span<const char> input) {
     if (input.empty()) return true;
     return detail::validate_utf8_dispatch(input.data(), input.size());
 }
+#endif // SIMDTEXT_HAVE_HWY
 
 bool Utf8Validator::validate(std::string_view chunk) noexcept {
     for (char c : chunk) {
