@@ -26,11 +26,9 @@ size_t count_byte_vec(D d, const uint8_t* HWY_RESTRICT ptr, size_t size, uint8_t
         c3 += hn::CountTrue(d, hn::Eq(hn::LoadU(d, ptr + i + 3 * N), vbyte));
     }
     size_t count = c0 + c1 + c2 + c3;
-    // Handle remaining full vectors
     for (; i + N <= size; i += N) {
         count += hn::CountTrue(d, hn::Eq(hn::LoadU(d, ptr + i), vbyte));
     }
-    // Tail
     for (; i < size; ++i) {
         if (ptr[i] == byte) ++count;
     }
@@ -42,7 +40,6 @@ bool is_ascii_vec(D d, const uint8_t* HWY_RESTRICT ptr, size_t size) {
     const size_t N = hn::Lanes(d);
 
     // ILP-friendly: 4x unrolled OR accumulation
-    // Instead of early-exiting each vector, OR 4 vectors together and check once
     size_t i = 0;
     auto acc0 = hn::Zero(d);
     auto acc1 = hn::Zero(d);
@@ -54,17 +51,14 @@ bool is_ascii_vec(D d, const uint8_t* HWY_RESTRICT ptr, size_t size) {
         acc2 = hn::Or(acc2, hn::LoadU(d, ptr + i + 2 * N));
         acc3 = hn::Or(acc3, hn::LoadU(d, ptr + i + 3 * N));
     }
-    // Check combined: if any byte has bit 7 set, it's not ASCII
     auto combined = hn::Or(hn::Or(acc0, acc1), hn::Or(acc2, acc3));
     const auto high_bit = hn::Set(d, uint8_t(0x80));
     if (!hn::AllFalse(d, hn::Ne(hn::And(combined, high_bit), hn::Zero(d)))) return false;
-    // Remaining full vectors
     for (; i + N <= size; i += N) {
         const auto v = hn::LoadU(d, ptr + i);
         const auto high = hn::And(v, high_bit);
         if (!hn::AllFalse(d, hn::Ne(high, hn::Zero(d)))) return false;
     }
-    // Tail
     for (; i < size; ++i) {
         if (ptr[i] >= 0x80) return false;
     }
@@ -123,65 +117,173 @@ const char* find_byte_vec(D d, const uint8_t* HWY_RESTRICT ptr, size_t size, uin
     return base + size;
 }
 
-// ── UTF-8 Validation using lookup-table approach (simdutf-style) ──────
+// ── UTF-8 Validation: Lookup-Table SIMD (simdutf lookup4 algorithm) ──
 //
 // Based on John Regehr's algorithm and simdutf's implementation.
-// Uses pshufb/TBL to classify bytes by high/low nibble, then tracks
-// expected continuation bytes across chunk boundaries.
+// Uses TableLookupBytes (pshufb/vtbl) to classify bytes by nibble,
+// then verifies structural constraints via shift/compare.
 //
-// Key insight: instead of processing bytes sequentially, classify ALL bytes
-// in a vector simultaneously using lookup tables, then verify structural
-// constraints (correct continuation byte sequences) using shift/compare.
+// Process: For each N-byte vector:
+// 1. Get prev1 by shifting input right 1 byte (from prev block)
+// 2. Three lookup tables classify (prev_high_nibble, prev_low_nibble, cur_high_nibble)
+// 3. AND the three results → per-byte error flags
+// 4. Check multibyte lengths using prev<2> and prev<3>
+// 5. OR errors into accumulator; check once at end
+
+// Error bit flags (same encoding as simdutf)
+static constexpr uint8_t TOO_SHORT  = 1 << 0;
+static constexpr uint8_t TOO_LONG   = 1 << 1;
+static constexpr uint8_t OVERLONG_3 = 1 << 2;
+static constexpr uint8_t TOO_LARGE  = 1 << 3;
+static constexpr uint8_t SURROGATE  = 1 << 4;
+static constexpr uint8_t OVERLONG_2 = 1 << 5;
+static constexpr uint8_t OVERLONG_4 = 1 << 6;
+static constexpr uint8_t TWO_CONTS  = 1 << 7;
+
+// Bits that involve checking byte_1
+static constexpr uint8_t CARRY = TOO_SHORT | TOO_LONG | TWO_CONTS;
+
+// Lookup by (prev_byte >> 4): classifies the HIGH nibble of the previous byte
+alignas(64) static constexpr uint8_t kByte1High[16] = {
+    TOO_LONG,  TOO_LONG,  TOO_LONG,  TOO_LONG,   // 0x0-0x3: ASCII
+    TOO_LONG,  TOO_LONG,  TOO_LONG,  TOO_LONG,   // 0x4-0x7: ASCII
+    TWO_CONTS, TWO_CONTS, TWO_CONTS, TWO_CONTS,  // 0x8-0xB: continuation
+    TOO_SHORT | OVERLONG_2,                        // 0xC: 2-byte lead (C0-CF)
+    TOO_SHORT,                                     // 0xD: 2-byte lead (D0-DF)
+    TOO_SHORT | OVERLONG_3 | SURROGATE,            // 0xE: 3-byte lead (E0-EF)
+    TOO_SHORT | TOO_LARGE | OVERLONG_4,            // 0xF: 4-byte lead (F0-FF)
+};
+
+// Lookup by (prev_byte & 0x0F): classifies the LOW nibble of the previous byte
+alignas(64) static constexpr uint8_t kByte1Low[16] = {
+    CARRY | OVERLONG_3 | OVERLONG_2 | OVERLONG_4,  // ____0000
+    CARRY | OVERLONG_2,                              // ____0001
+    CARRY, CARRY,                                     // ____001x
+    CARRY | TOO_LARGE,                                // ____0100
+    CARRY | TOO_LARGE,                                // ____0101
+    CARRY | TOO_LARGE, CARRY | TOO_LARGE,             // ____011x
+    CARRY | TOO_LARGE, CARRY | TOO_LARGE,             // ____100x
+    CARRY | TOO_LARGE, CARRY | TOO_LARGE,             // ____101x
+    CARRY | TOO_LARGE,                                // ____1100
+    CARRY | TOO_LARGE | SURROGATE,                    // ____1101 (ED = surrogate)
+    CARRY | TOO_LARGE, CARRY | TOO_LARGE,             // ____111x
+};
+
+// Lookup by (cur_byte >> 4): classifies the HIGH nibble of the current byte
+alignas(64) static constexpr uint8_t kByte2High[16] = {
+    TOO_SHORT, TOO_SHORT, TOO_SHORT, TOO_SHORT,  // 0x0-0x3: ASCII
+    TOO_SHORT, TOO_SHORT, TOO_SHORT, TOO_SHORT,  // 0x4-0x7: ASCII
+    TOO_LONG | OVERLONG_2 | TWO_CONTS | OVERLONG_3 | OVERLONG_4,  // 1000____
+    TOO_LONG | OVERLONG_2 | TWO_CONTS | OVERLONG_3 | TOO_LARGE,   // 1001____
+    TOO_LONG | OVERLONG_2 | TWO_CONTS | SURROGATE | TOO_LARGE,    // 1010____
+    TOO_LONG | OVERLONG_2 | TWO_CONTS | SURROGATE | TOO_LARGE,    // 1011____
+    TOO_SHORT, TOO_SHORT, TOO_SHORT, TOO_SHORT,  // 11______: lead byte
+};
+
+template <class D>
+hn::Vec<D> check_special_cases(D d, hn::Vec<D> input, hn::Vec<D> prev1) {
+    const auto v0x0F = hn::Set(d, uint8_t(0x0F));
+    const auto prev1_high = hn::ShiftRight<4>(prev1);
+    const auto prev1_low  = hn::And(prev1, v0x0F);
+    const auto input_high = hn::ShiftRight<4>(input);
+
+    const auto byte_1_high = hn::TableLookupBytes(hn::LoadU(d, kByte1High), prev1_high);
+    const auto byte_1_low  = hn::TableLookupBytes(hn::LoadU(d, kByte1Low),  prev1_low);
+    const auto byte_2_high = hn::TableLookupBytes(hn::LoadU(d, kByte2High), input_high);
+
+    return hn::And(hn::And(byte_1_high, byte_1_low), byte_2_high);
+}
+
+template <class D>
+hn::Vec<D> check_multibyte_lengths(D d, hn::Vec<D> input, hn::Vec<D> prev_input, hn::Vec<D> sc) {
+    const auto prev2 = hn::CombineShiftRightBytes<2>(d, input, prev_input);
+    const auto prev3 = hn::CombineShiftRightBytes<3>(d, input, prev_input);
+
+    // A byte must be a continuation if prev2 or prev3 was a multi-byte lead
+    const auto vC0 = hn::Set(d, uint8_t(0xC0));
+    const auto vF8 = hn::Set(d, uint8_t(0xF8));
+
+    // Convert masks to vectors: 0xFF for true, 0x00 for false
+    const auto vFF = hn::Set(d, uint8_t(0xFF));
+    const auto v00 = hn::Zero(d);
+    const auto prev2_is_lead = hn::IfThenElse(hn::And(hn::Ge(prev2, vC0), hn::Lt(prev2, vF8)), vFF, v00);
+    const auto prev3_is_lead = hn::IfThenElse(hn::And(hn::Ge(prev3, vC0), hn::Lt(prev3, vF8)), vFF, v00);
+    const auto must23 = hn::Or(prev2_is_lead, prev3_is_lead);
+
+    // For bytes that must be continuations, bit 7 must be set (0x80)
+    const auto v80 = hn::Set(d, uint8_t(0x80));
+    const auto must23_80 = hn::And(must23, v80);
+
+    // XOR: if must23_80 is 0x80 but sc says the continuation is wrong, error
+    return hn::Xor(must23_80, sc);
+}
+
+template <class D>
+hn::Vec<D> is_incomplete(D d, hn::Vec<D> input) {
+    const size_t N = hn::Lanes(d);
+    // Build max-value array: bytes near the end of a block can't start
+    // multi-byte sequences that would be incomplete
+    alignas(64) uint8_t max_arr[64] = {};
+    for (size_t i = 0; i < 64; ++i) {
+        const size_t from_end = 64 - i;
+        if (from_end <= N) {
+            if (from_end == 1)      max_arr[i] = 0xF0 - 1; // 4-byte: need 3 more
+            else if (from_end == 2) max_arr[i] = 0xE0 - 1; // 3-byte: need 2 more
+            else if (from_end == 3) max_arr[i] = 0xC0 - 1; // 2-byte: need 1 more
+            else                    max_arr[i] = 0xFF;      // enough room
+        }
+    }
+    const auto max_val = hn::LoadU(d, &max_arr[64 - N]);
+    // Convert Gt mask to vector: 0xFF where input > max_val, 0x00 elsewhere
+    const auto vFF = hn::Set(d, uint8_t(0xFF));
+    const auto v00 = hn::Zero(d);
+    return hn::IfThenElse(hn::Gt(input, max_val), vFF, v00);
+}
 
 template <class D>
 bool validate_utf8_vec(D d, const uint8_t* HWY_RESTRICT ptr, size_t size) {
     const size_t N = hn::Lanes(d);
+    const auto v80 = hn::Set(d, uint8_t(0x80));
 
-    // Lookup tables for byte classification by high nibble
-    // Value meanings: 0=ASCII/continuation, 1=2-byte lead, 2=3-byte lead, 3=4-byte lead, 0xFF=invalid
-    // These are loaded as Highway vectors and used with TableLookupBytes
-    alignas(64) static constexpr uint8_t high_nibble_table[16] = {
-        0, 0, 0, 0, 0, 0, 0, 0,  // 0x00-0x7F: ASCII (high nibble 0-7)
-        0, 0, 0, 0,              // 0x80-0xBF: continuation bytes
-        1,                        // 0xC0-0xCF: 2-byte leads
-        2,                        // 0xD0-0xDF: 3-byte leads (note: some are surrogates)
-        3,                        // 0xE0-0xEF: 3-byte leads
-        4                         // 0xF0-0xFF: 4-byte leads (note: some are invalid)
-    };
+    auto error = hn::Zero(d);
+    auto prev_input = hn::Zero(d);
+    auto prev_incomplete = hn::Zero(d);
 
-    // For a simplified but correct validator, we use the direct byte-by-byte
-    // approach with SIMD acceleration for the ASCII fast path.
-    // Full lookup-table approach requires careful handling of lane boundaries.
-    //
-    // Fast path: check if entire input is ASCII (most common case)
-    // If so, it's valid UTF-8 by definition.
-    if (is_ascii_vec(d, ptr, size)) return true;
+    size_t i = 0;
+    for (; i + N <= size; i += N) {
+        const auto input = hn::LoadU(d, ptr + i);
 
-    // Slow path: has non-ASCII bytes. Fall back to scalar validator.
-    // Inline scalar validation to avoid cross-namespace dependency.
-    const auto* p = ptr;
-    const auto* end = ptr + size;
-    while (p < end) {
-        const auto byte = *p++;
-        if (byte <= 0x7F) continue;
-        else if ((byte & 0xE0) == 0xC0) {
-            if (p >= end || (*p & 0xC0) != 0x80) return false;
-            if (byte < 0xC2) return false;  // overlong
-            ++p;
-        } else if ((byte & 0xF0) == 0xE0) {
-            if (p + 1 >= end || (*p & 0xC0) != 0x80 || (*(p+1) & 0xC0) != 0x80) return false;
-            if (byte == 0xE0 && *p < 0xA0) return false;  // overlong
-            if (byte == 0xED && *p > 0x9F) return false;  // surrogate
-            p += 2;
-        } else if ((byte & 0xF8) == 0xF0) {
-            if (p + 2 >= end || (*p & 0xC0) != 0x80 || (*(p+1) & 0xC0) != 0x80 || (*(p+2) & 0xC0) != 0x80) return false;
-            if (byte == 0xF0 && *p < 0x90) return false;  // overlong
-            if (byte > 0xF4) return false;                 // > U+10FFFF
-            if (byte == 0xF4 && *p > 0x8F) return false;  // > U+10FFFF
-            p += 3;
-        } else return false;
+        // ASCII fast path: no bytes with bit 7 set
+        if (hn::AllFalse(d, hn::Lt(input, v80))) {
+            // All ASCII — but check if previous block was incomplete
+            error = hn::Or(error, prev_incomplete);
+        } else {
+            // Non-ASCII: full lookup-table validation
+            const auto prev1 = hn::CombineShiftRightBytes<1>(d, input, prev_input);
+            const auto sc = check_special_cases(d, input, prev1);
+            error = hn::Or(error, check_multibyte_lengths(d, input, prev_input, sc));
+            prev_incomplete = is_incomplete(d, input);
+        }
+        prev_input = input;
     }
-    return true;
+
+    // Handle tail: zero-pad and process one more vector
+    if (i < size) {
+        alignas(64) uint8_t block[64] = {};
+        for (size_t j = 0; j < size - i; ++j) block[j] = ptr[i + j];
+        const auto input = hn::LoadU(d, block);
+        if (!hn::AllFalse(d, hn::Lt(input, v80))) {
+            const auto prev1 = hn::CombineShiftRightBytes<1>(d, input, prev_input);
+            const auto sc = check_special_cases(d, input, prev1);
+            error = hn::Or(error, check_multibyte_lengths(d, input, prev_input, sc));
+        }
+        error = hn::Or(error, prev_incomplete);
+    } else {
+        // EOF check: any incomplete sequences from last block?
+        error = hn::Or(error, prev_incomplete);
+    }
+
+    return hn::AllTrue(d, hn::Eq(error, hn::Zero(d)));
 }
 
 } // anonymous namespace
