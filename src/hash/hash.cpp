@@ -1,9 +1,5 @@
 #include "simdtext/hash.hpp"
 
-#if defined(__SSE4_2__)
-#include <nmmintrin.h>
-#endif
-
 namespace simdtext {
 
 namespace {
@@ -83,64 +79,48 @@ static constexpr uint32_t crc32c_table[256] = {
 } // anonymous namespace
 
 uint32_t crc32(std::string_view data) noexcept {
-#if defined(__SSE4_2__)
-    uint64_t crc = 0xFFFFFFFFFFFFFFFFULL;
-    const uint8_t* ptr = reinterpret_cast<const uint8_t*>(data.data());
-    size_t len = data.size();
-    while (len >= 8) {
-        uint64_t val;
-        __builtin_memcpy(&val, ptr, 8);
-        crc = _mm_crc32_u64(crc, val);
-        ptr += 8;
-        len -= 8;
-    }
-    while (len >= 1) {
-        crc = _mm_crc32_u8(static_cast<uint32_t>(crc), *ptr);
-        ptr++;
-        len--;
-    }
-    return static_cast<uint32_t>(crc ^ 0xFFFFFFFFFFFFFFFFULL);
-#else
+    // CRC32 uses the standard polynomial (0xEDB88320) — no hardware instruction for this.
+    // Software table lookup is the only option on x86.
     uint32_t crc = 0xFFFFFFFF;
     for (char c : data) {
         crc = (crc >> 8) ^ crc32_table[(crc ^ static_cast<unsigned char>(c)) & 0xFF];
     }
     return crc ^ 0xFFFFFFFF;
-#endif
 }
 
 uint32_t crc32c(std::string_view data) noexcept {
-#if defined(__SSE4_2__)
-    uint64_t crc = 0xFFFFFFFFFFFFFFFFULL;
-    const uint8_t* ptr = reinterpret_cast<const uint8_t*>(data.data());
-    size_t len = data.size();
-    while (len >= 8) {
-        uint64_t val;
-        __builtin_memcpy(&val, ptr, 8);
-        crc = _mm_crc32_u64(crc, val);
-        ptr += 8;
-        len -= 8;
+    if (__builtin_cpu_supports("sse4.2")) {
+        // CRC32C (Castagnoli) has hardware support via SSE4.2
+        uint64_t crc = 0xFFFFFFFFFFFFFFFFULL;
+        const uint8_t* ptr = reinterpret_cast<const uint8_t*>(data.data());
+        size_t len = data.size();
+        while (len >= 8) {
+            uint64_t val;
+            __builtin_memcpy(&val, ptr, 8);
+            // Use inline asm to avoid needing -msse4.2 compile flag
+            // The crc32b/crc32q instructions are CRC32C (Castagnoli)
+            __asm__ __volatile__("crc32q %1, %0" : "+r"(crc) : "rm"(val));
+            ptr += 8; len -= 8;
+        }
+        uint32_t crc32_val = static_cast<uint32_t>(crc);
+        while (len >= 4) {
+            uint32_t val;
+            __builtin_memcpy(&val, ptr, 4);
+            __asm__ __volatile__("crc32l %1, %0" : "+r"(crc32_val) : "rm"(val));
+            ptr += 4; len -= 4;
+        }
+        while (len >= 1) {
+            __asm__ __volatile__("crc32b %1, %0" : "+r"(crc32_val) : "rm"(*ptr));
+            ptr++; len--;
+        }
+        return crc32_val ^ 0xFFFFFFFF;
     }
-    while (len >= 4) {
-        uint32_t val;
-        __builtin_memcpy(&val, ptr, 4);
-        crc = _mm_crc32_u32(static_cast<uint32_t>(crc), val);
-        ptr += 4;
-        len -= 4;
-    }
-    while (len >= 1) {
-        crc = _mm_crc32_u8(static_cast<uint32_t>(crc), *ptr);
-        ptr++;
-        len--;
-    }
-    return static_cast<uint32_t>(crc ^ 0xFFFFFFFFFFFFFFFFULL);
-#else
+    // Software fallback
     uint32_t crc = 0xFFFFFFFF;
     for (char c : data) {
         crc = crc32c_table[(crc ^ static_cast<unsigned char>(c)) & 0xFF] ^ (crc >> 8);
     }
     return crc ^ 0xFFFFFFFF;
-#endif
 }
 
 uint64_t xxhash64(std::string_view data) noexcept {
