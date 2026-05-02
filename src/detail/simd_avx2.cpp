@@ -3,7 +3,6 @@
 #include <cstddef>
 #include <cstdint>
 #include "simdtext/types.hpp"
-#include "simdtext/types.hpp"
 
 using simdtext::DecodeResult;
 using simdtext::ErrorCode;
@@ -447,101 +446,22 @@ size_t count_code_points(const char* data, size_t size) {
 }
 
 // ── AVX2 Base64 Decode ─────────────────────────────────────
+// ── AVX2 Base64 Decode ─────────────────────────────────────
 //
 // Processes 32 base64 chars → 24 output bytes per iteration.
 //
-// Char→value: range-based SIMD comparisons (no LUT needed)
-// Packing: pshufb rearrange + 16-bit shift/mask/OR
+// Char→value: range-based SIMD comparisons (no LUT needed).
+// Packing: pshufb to gather a/b/c/d into low bytes of 16-bit lanes,
+// then slli_epi16/srli_epi16 to shift within each lane, OR to combine.
 //
 // For [a,b,c,d] → [out0, out1, out2]:
 //   out0 = (a << 2) | (b >> 4)
-//   out1 = ((b & 0xF) << 4) | (c >> 2)
-//   out2 = ((c & 0x3) << 6) | d
+//   out1 = (b << 4) | (c >> 2)     — b<<4 = (b&0xF)<<4 since b is 6-bit
+//   out2 = (c << 6) | d            — c<<6 = (c&0x3)<<6 since c is 6-bit
 //
-// Packing strategy (operates on 16-bit lanes within 128-bit halves):
-//   1. pshufb to rearrange: place a,c at even positions, b,d at odd positions
-//   2. Use 16-bit shifts: slli shifts both bytes in a 16-bit lane together,
-//      srli similarly. With masks, we isolate the correct bits.
-//   3. Specifically:
-//      - For out0: need a<<2 in high byte, b>>4 in low byte of same 16-bit lane
-//        → pshufb [a,b] into same 16-bit lane, then slli by 2 gives a<<2,b<<2
-//        → We want a<<2 (correct) and b>>4 (not b<<2).
-//        This doesn't work directly.
-//
-// Alternative: use the MADD approach with per-byte multiplication.
-// maddubs_epi16 treats first arg as unsigned, second as signed.
-// maddubs_epi16(a, b) = a[2i]*b[2i] + a[2i+1]*b[2i+1] (int16 result)
-//
-// For [a,b,c,d] in a 32-bit lane:
-//   maddubs([a,b], [4,1]) = a*4 + b*1 = a<<2 + b
-//   The 16-bit result: bits [9:2] = a, bits [5:0] = b
-//   → byte0 = result >> 4 (bits [7:0] of result >> 4 = a[5:2] | b[5:4])
-//   Hmm, that's not quite right either.
-//
-// Let me work through the math carefully:
-//   a is 6 bits: a5 a4 a3 a2 a1 a0
-//   b is 6 bits: b5 b4 b3 b2 b1 b0
-//   a<<2 = a5 a4 a3 a2 a1 a0 0 0   (8 bits, fits in byte since a < 64)
-//   b>>4 = 0 0 0 0 b5 b4           (need 2 bits)
-//   out0 = a5 a4 a3 a2 a1 a0 b5 b4  (8 bits)
-//
-//   a*4 + b = a<<2 + b  (as a 16-bit value)
-//   = 0 0 0 0 0 0 0 0 a5 a4 a3 a2 a1 a0 0 0
-//   + 0 0 0 0 0 0 0 0 0 0 b5 b4 b3 b2 b1 b0
-//   = 0 0 0 0 0 0 a5 a4 a3 a2 a1 a0+b5 b4+b3 b2+b1 b0
-//   (with carries from b into a)
-//   This is NOT the same as (a<<2 | b>>4).
-//
-// So maddubs doesn't directly give us the right result.
-//
-// CORRECT APPROACH: Use the "3-register" method:
-//   reg_a = pshufb to gather all 'a' values (positions 0,4,8,...)
-//   reg_b = pshufb to gather all 'b' values (positions 1,5,9,...)
-//   etc.
-// Then for each output byte stream:
-//   out0_stream = (reg_a << 2) | (reg_b >> 4)
-//   But we need BYTE-level shifts, which AVX2 doesn't have.
-//
-// However, we CAN emulate byte shifts using maddubs:
-//   x << 2  ≡  maddubs(x, 4) where x is treated as unsigned pairs
-//   x >> 4  ≡  maddubs(x, 1/16) -- but 1/16 isn't an integer
-//
-// OR: we can use slli_epi16 on carefully arranged pairs and mask.
-// If we arrange [0, a] in each 16-bit lane:
-//   slli_epi16([0, a], 2) = [0, a<<2] -- gives a<<2 in low byte
-//   But we want a<<2 in a specific byte position.
-//
-// If we arrange [a, 0] in each 16-bit lane:
-//   slli_epi16([a, 0], 2) = [a<<2 in high byte, 0 in low byte]
-//   Wait, slli shifts the 16-bit value: a*256 << 2 = a*1024 = a<<10 as 16-bit
-//   High byte = a<<2, low byte = 0. YES!
-//
-// So: place a in the high byte of a 16-bit lane, shift left by 2:
-//   [a*256] << 2 = a*1024 = [a<<2, 0]
-//   The high byte of each 16-bit lane = a<<2 ✓
-//
-// Similarly, place b in the high byte, shift right by 4:
-//   [b*256] >> 4 = b*16 = [0, b<<4]  -- but we want b>>4, not b<<4!
-//
-// Hmm. For b>>4 we need b in the LOW byte:
-//   [0, b] >> 4 = [b>>4 in high byte, b<<4 in low byte]
-//   Wait: 16-bit value b, shifted right by 4 = b >> 4.
-//   As bytes: high byte = b>>4 & 0xFF = b>>4 (since b < 64), low byte = 0.
-//   Actually: the 16-bit value is just b (in the low byte). srli by 4 gives b>>4.
-//   High byte = 0, low byte = b>>4. ✓
-//
-// So the plan:
-// 1. pshufb decoded into reg_A: a values in high bytes of 16-bit lanes, low bytes = 0
-// 2. pshufb decoded into reg_B_lo: b values in low bytes, high bytes = 0
-// 3. pshufb decoded into reg_B_hi: b values in high bytes, low bytes = 0
-// 4. etc.
-// 5. Combine:
-//    out0 = slli(reg_A, 2) | srli(reg_B_lo, 4)   -- a<<2 | b>>4
-//    out1 = slli(reg_B_hi, 4) | srli(reg_C_lo, 2) -- (b&0xF)<<4 | c>>2
-//    out2 = slli(reg_C_hi, 6) | reg_D             -- (c&3)<<6 | d
-//
-// But this requires 4 separate pshufbs + multiple shifts + masks + ORs.
-// That's ~12 instructions per 32→24 packing. Not terrible.
+// 16-bit shift trick: value v in LOW byte of 16-bit lane [0x00, v]:
+//   slli_epi16(v, N) → v<<N in low byte (if v<<N < 256), 0 in high byte
+//   srli_epi16(v, N) → v>>N in low byte, 0 in high byte
 
 DecodeResult base64_decode_avx2(const uint8_t* src, size_t src_size, uint8_t* dst) noexcept {
     DecodeResult result{0, 0, ErrorCode::Ok};
@@ -551,10 +471,10 @@ DecodeResult base64_decode_avx2(const uint8_t* src, size_t src_size, uint8_t* ds
         return result;
     }
 
-    size_t i = 0;  // input offset
-    size_t j = 0;  // output offset
+    size_t i = 0;
+    size_t j = 0;
 
-    // Constants for range-based char→value conversion
+    // Range-based char→value constants
     const __m256i vA = _mm256_set1_epi8('A' - 1);
     const __m256i vZ = _mm256_set1_epi8('Z' + 1);
     const __m256i va = _mm256_set1_epi8('a' - 1);
@@ -564,31 +484,117 @@ DecodeResult base64_decode_avx2(const uint8_t* src, size_t src_size, uint8_t* ds
     const __m256i vplus = _mm256_set1_epi8('+');
     const __m256i vslash = _mm256_set1_epi8('/');
     const __m256i veq = _mm256_set1_epi8('=');
-
-    // Subtraction constants for each range
     const __m256i sub_AZ = _mm256_set1_epi8(static_cast<char>(0 - 'A'));
     const __m256i sub_az = _mm256_set1_epi8(static_cast<char>(26 - 'a'));
     const __m256i sub_09 = _mm256_set1_epi8(static_cast<char>(52 - '0'));
     const __m256i val_plus  = _mm256_set1_epi8(62);
     const __m256i val_slash = _mm256_set1_epi8(63);
 
-    // Masks for packing
-    const __m256i mask_3F = _mm256_set1_epi8(0x3F);  // 6 bits
-    const __m256i mask_0F = _mm256_set1_epi8(0x0F);  // 4 bits
-    const __m256i mask_03 = _mm256_set1_epi8(0x03);  // 2 bits
+    // Packing: pshufb masks to gather a/b/c/d from decoded into low bytes of
+    // 16-bit lanes. decoded per 128-bit lane: [a0,b0,c0,d0, a1,b1,c1,d1, ...]
+    // 0x80 = zero that byte position (pshufb zeros when bit 7 set).
+    //
+    // We need 6 pshufb gathers (a_lo, b_lo, b_hi, c_lo, c_hi, d_lo):
+    //   a_lo: a values in low bytes → slli(2) gives a<<2 in low byte
+    //   b_lo: b values in low bytes → srli(4) gives b>>4 in low byte
+    //   b_hi: b values in low bytes → slli(4) gives b<<4 in low byte
+    //   c_lo: c values in low bytes → srli(2) gives c>>2 in low byte
+    //   c_hi: c values in low bytes → slli(6) gives c<<6 in low byte
+    //   d_lo: d values in low bytes → used as-is
+    //
+    // Wait: slli(b_lo, 4) for 6-bit b: b<<4 max = 63<<4 = 1008, overflows byte!
+    // We only want (b&0xF)<<4 = max 240. So we need to mask b with 0x0F first.
+    // Similarly for c: slli(c_lo, 6) for 6-bit c: c<<6 max = 63<<6 = 4032, overflow.
+    // We only want (c&0x3)<<6 = max 192. So mask c with 0x03 first.
+    //
+    // Alternative: place b in HIGH byte of 16-bit lane, then slli by 4:
+    //   [b, 0] slli(4) → 16-bit value = b*256*16 = b<<12. High byte = b<<4, low byte = 0.
+    //   b<<4 for 6-bit b: max 1008, high byte = 1008/256 = 3, low byte = 240.
+    //   That's not right either - b<<4 overflows the high byte.
+    //
+    // Hmm. The issue is that (b&0xF)<<4 fits in a byte (max 240), but b<<4 doesn't.
+    // So we MUST mask before shifting.
+    //
+    // Plan: use AND with masks before shifting.
+    //   b_masked = b & 0x0F → slli(4) → (b&0xF)<<4, fits in byte
+    //   c_masked = c & 0x03 → slli(6) → (c&3)<<6, fits in byte
+    //
+    // For b>>4 and c>>2: no masking needed since shifting right.
+    // For a<<2: a is 6 bits, a<<2 max = 252, fits in byte. No masking needed.
 
-    // Pshufb shuffle masks for separating a,b,c,d from decoded register.
-    // decoded layout: [a0,b0,c0,d0, a1,b1,c1,d1, a2,b2,c2,d2, a3,b3,c3,d3]
-    // per 128-bit lane (16 bytes).
+    const __m256i mask_0F = _mm256_set1_epi8(0x0F);
+    const __m256i mask_03 = _mm256_set1_epi8(0x03);
+
+    // Shuffle masks: gather values from decoded into LOW bytes of 16-bit lanes.
+    // Per 128-bit lane, decoded has: [a0,b0,c0,d0, a1,b1,c1,d1, a2,b2,c2,d2, a3,b3,c3,d3]
+    // We want a values (indices 0,4,8,12) in the odd positions (low bytes of 16-bit lanes):
+    //   Positions 1,3,5,7,9,11,13,15 in the 128-bit lane
+    // But pshufb can only place one source byte per destination.
+    // With 8 16-bit lanes per 128-bit half, we need 4 a-values in 4 low-byte positions,
+    // and zero in the other 4 low-byte positions and all high-byte positions.
     //
-    // For 'a' values (positions 0,4,8,12 in each lane):
-    //   pshufb: gather to output positions for out0 stream.
-    //   out0 has 6 bytes per lane (a0..a3 mapped to output positions 0,3,6,9,
-    //   but we also need to interleave with b>>4 bits).
+    // Actually, we can use all 8 low-byte positions (4 from each 128-bit lane):
+    // Per 128-bit lane, we have 8 16-bit lanes (lanes 0-7):
+    //   low bytes at positions: 1,3,5,7,9,11,13,15
+    //   high bytes at positions: 0,2,4,6,8,10,12,14
     //
-    // Actually, for simplicity, let's just use the store-and-scalar-pack
-    // approach for the packing step. The range-based SIMD decode is the
-    // main speedup; packing from a stored register is still fast.
+    // For a-values at positions 0,4,8,12 in the source:
+    //   Place into low bytes of 16-bit lanes 0,1,2,3 → dest positions 1,3,5,7
+    //   High bytes (positions 0,2,4,6) → zero (0x80)
+    //
+    // But we also need b,c,d values in different registers, each using different
+    // low-byte positions. The problem: we only have 4 useful positions per lane
+    // (the 4 low bytes of the first 4 16-bit lanes), but we need to combine
+    // multiple values into the SAME lane.
+    //
+    // REVISED PLAN: Use ALL 8 16-bit lanes per 128-bit half.
+    // Each 16-bit lane produces one output byte.
+    // 32 decoded bytes → 24 output bytes (8 groups × 3 bytes = 24).
+    // We need 3 output registers (out0, out1, out2), each with 8 bytes per lane.
+    //
+    // For out0 = (a<<2) | (b>>4):
+    //   Need a in low byte, shift left by 2: slli(a_lo, 2) → a<<2 in low byte
+    //   Need b in low byte, shift right by 4: srli(b_lo, 4) → b>>4 in low byte
+    //   OR them → out0
+    //   But a and b are from DIFFERENT positions in decoded. We need them in
+    //   the SAME 16-bit lanes to OR them. So both pshufb gathers must place
+    //   values into the same lane positions.
+    //
+    // For a-values at positions [0,4,8,12] in each 128-bit lane:
+    //   pshufb to place into low bytes of lanes [0,2,4,6] (positions 1,5,9,13)
+    // For b-values at positions [1,5,9,13]:
+    //   pshufb to place into low bytes of lanes [0,2,4,6] (same positions!)
+    //
+    // out0 for both 128-bit lanes = 8 bytes total, but we need 8 output bytes
+    // (one per group). Each 128-bit lane has 4 groups, so 4 output bytes per lane.
+    // We use 4 out of 8 low-byte positions per lane. That's fine.
+    //
+    // Similarly for out1 and out2.
+
+    // Shuffle masks: gather a/b/c/d into alternating low-byte positions.
+    // Lane layout per 128-bit half: [H0,L0, H1,L1, H2,L2, H3,L3, H4,L4, H5,L5, H6,L6, H7,L7]
+    // We use L0,L1,L2,L3 (positions 1,3,5,7) for the 4 groups per lane.
+    // H0-H7 and L4-L7 are all zeroed.
+    const auto X = static_cast<char>(0x80);
+    const __m256i shuf_a = _mm256_setr_epi8(
+        X, 0, X, 4, X, 8, X,12,  X,X, X,X, X,X, X,X,
+        X, 0, X, 4, X, 8, X,12,  X,X, X,X, X,X, X,X);
+    const __m256i shuf_b = _mm256_setr_epi8(
+        X, 1, X, 5, X, 9, X,13,  X,X, X,X, X,X, X,X,
+        X, 1, X, 5, X, 9, X,13,  X,X, X,X, X,X, X,X);
+    const __m256i shuf_c = _mm256_setr_epi8(
+        X, 2, X, 6, X,10, X,14,  X,X, X,X, X,X, X,X,
+        X, 2, X, 6, X,10, X,14,  X,X, X,X, X,X, X,X);
+    const __m256i shuf_d = _mm256_setr_epi8(
+        X, 3, X, 7, X,11, X,15,  X,X, X,X, X,X, X,X,
+        X, 3, X, 7, X,11, X,15,  X,X, X,X, X,X, X,X);
+
+    // Output shuffle: from 16-bit lanes with result in low bytes,
+    // compact 8 bytes (4 per 128-bit lane) into contiguous output.
+    // Low bytes are at positions 1,3,5,7 in each 128-bit lane.
+    const __m256i shuf_out = _mm256_setr_epi8(
+        1, 3, 5, 7,  X,X, X,X, X,X, X,X, X,X, X,X,
+        1, 3, 5, 7,  X,X, X,X, X,X, X,X, X,X, X,X);
 
     // Process 32 base64 chars at a time → 24 output bytes
     for (; i + 32 <= src_size; i += 32) {
@@ -628,75 +634,57 @@ DecodeResult base64_decode_avx2(const uint8_t* src, size_t src_size, uint8_t* ds
             )
         );
 
-        // Pack 4 × 6-bit → 3 bytes using pshufb + maddubs
-        //
-        // We use the following maddubs trick:
-        // For each group [a,b,c,d], compute:
-        //   merged_ab = a*4 + b  (as 16-bit: a<<2 + b)
-        //   merged_cd = c*64 + d (as 16-bit: c<<6 + d)
-        // Then extract bytes:
-        //   out0 = merged_ab >> 4  (bits [11:4] → 8 bits = a[5:0]b[5:4])
-        //   out1 = ((merged_ab & 0xF) << 4) | (merged_cd >> 10 & 0xF)
-        //   out2 = merged_cd & 0xFF  -- wait, c<<6+d might overflow byte
-        //
-        // Let me verify: c<<6 max = 63*64 = 4032, d max = 63, sum = 4095. Fits in uint16.
-        // As bytes: high byte = (c<<6+d)>>8 = c>>2 (only top 4 bits of c)
-        //           low byte = (c<<6+d) & 0xFF = (c&3)<<6 | d (if d < 64, c&3 < 4)
-        //           (c&3)<<6 max = 192, d max = 63, sum max = 255 ✓
-        //
-        // Similarly: a<<2+b: a<<2 max = 252, b max = 63, sum max = 315.
-        // High byte = (a<<2+b)>>8 = a>>6 (just bit 5 of a, which is 0 since a < 64)
-        // Actually a<<2+b = a*4+b. Since a<64, a*4<256. So (a*4+b)>>8 = 0 or 1.
-        // Hmm, a=63: 63*4=252, +b=63 → 315 → high byte = 1, low byte = 59.
-        // out0 should be (63<<2)|(63>>4) = 252|3 = 255. But (a*4+b)>>4 = 315>>4 = 19.
-        // That's wrong!
-        //
-        // The issue: a*4+b ≠ a<<2 | b>>4 because of carry from b into a.
-        //
-        // So maddubs with [4,1] does NOT give the correct result.
-        // We need a*4 + b/16, but b/16 is not an integer for most b values.
-        //
-        // CORRECT: use maddubs with [4, 0] for the a<<2 part, then separately
-        // compute b>>4 with srli, then OR them.
-        //
-        // Or: use the approach where we widen to 16-bit, do 16-bit multiply,
-        // then pack down.
-        //
-        // SIMPLEST CORRECT SIMD APPROACH for packing:
-        // Use pshufb to rearrange decoded into specific byte positions,
-        // then use slli_epi16 / srli_epi16 on 16-bit lanes with masking.
-        //
-        // For a 128-bit lane with [a0,b0,c0,d0, a1,b1,c1,d1, a2,b2,c2,d2, a3,b3,c3,d3]:
-        //
-        // Step 1: pshufb to create reg with [a0,00, b0,00, a1,00, b1,00, ...]
-        //         (a values at even bytes, b values at odd bytes of 16-bit lanes)
-        //  Wait, pshufb can only permute, not zero.
-        //  Use pshufb with 0x80 for zeroing (pshufb sets byte to 0 if index has high bit set).
-        //
-        // Actually, the simplest approach that works:
-        // 1. Store decoded to a temp buffer
-        // 2. Do the packing scalar from the temp buffer
-        // 3. This is still faster than pure scalar because the range-based
-        //    char→value conversion is the bottleneck (replaces 4 LUT lookups +
-        //    branches per group with SIMD comparisons).
-        //
-        // The packing (shift+OR) is simple scalar arithmetic that the CPU
-        // can pipeline very well. The main SIMD win is eliminating the
-        // per-byte LUT lookup and branch.
+        // Pack: gather a,b,c,d into 16-bit lanes, shift, mask, combine
+        __m256i a_lo = _mm256_shuffle_epi8(decoded, shuf_a);
+        __m256i b_lo = _mm256_shuffle_epi8(decoded, shuf_b);
+        __m256i c_lo = _mm256_shuffle_epi8(decoded, shuf_c);
+        __m256i d_lo = _mm256_shuffle_epi8(decoded, shuf_d);
 
-        // Store decoded values and pack scalar
-        alignas(32) uint8_t dec[32];
-        _mm256_store_si256(reinterpret_cast<__m256i*>(dec), decoded);
+        // out0 = (a<<2) | (b>>4)
+        __m256i out0 = _mm256_or_si256(
+            _mm256_slli_epi16(a_lo, 2),
+            _mm256_srli_epi16(b_lo, 4));
 
-        for (int k = 0; k < 8; ++k) {
-            uint8_t a = dec[k*4+0];
-            uint8_t b = dec[k*4+1];
-            uint8_t c = dec[k*4+2];
-            uint8_t d = dec[k*4+3];
-            dst[j++] = (a << 2) | (b >> 4);
-            dst[j++] = (b << 4) | (c >> 2);
-            dst[j++] = (c << 6) | d;
-        }
+        // out1 = ((b&0xF)<<4) | (c>>2)
+        __m256i out1 = _mm256_or_si256(
+            _mm256_slli_epi16(_mm256_and_si256(b_lo, mask_0F), 4),
+            _mm256_srli_epi16(c_lo, 2));
+
+        // out2 = ((c&0x3)<<6) | d
+        __m256i out2 = _mm256_or_si256(
+            _mm256_slli_epi16(_mm256_and_si256(c_lo, mask_03), 6),
+            d_lo);
+
+        // Compact and store: extract the 8 output bytes from each register
+        // (4 per 128-bit lane, at positions 1,3,5,7)
+        __m256i out0c = _mm256_shuffle_epi8(out0, shuf_out);
+        __m256i out1c = _mm256_shuffle_epi8(out1, shuf_out);
+        __m256i out2c = _mm256_shuffle_epi8(out2, shuf_out);
+
+        // Store 8 bytes from each (4 per 128-bit lane)
+        // out0c has bytes at positions 0-3 and 16-19
+        // out1c has bytes at positions 0-3 and 16-19
+        // out2c has bytes at positions 0-3 and 16-19
+        // Total: 24 bytes in order: out0c[0:4], out1c[0:4], out2c[0:4], out0c[16:20], out1c[16:20], out2c[16:20]
+
+        // Extract 128-bit lanes and store
+        __m128i o0_lo = _mm256_extracti128_si256(out0c, 0);
+        __m128i o1_lo = _mm256_extracti128_si256(out1c, 0);
+        __m128i o2_lo = _mm256_extracti128_si256(out2c, 0);
+        __m128i o0_hi = _mm256_extracti128_si256(out0c, 1);
+        __m128i o1_hi = _mm256_extracti128_si256(out1c, 1);
+        __m128i o2_hi = _mm256_extracti128_si256(out2c, 1);
+
+        // Store 4 bytes from each lane segment
+        // First 4 groups (from low 128-bit lanes):
+        _mm_storel_epi64(reinterpret_cast<__m128i*>(dst + j),      o0_lo);  // 4 bytes at positions 0-3
+        _mm_storel_epi64(reinterpret_cast<__m128i*>(dst + j + 4),  o1_lo);
+        _mm_storel_epi64(reinterpret_cast<__m128i*>(dst + j + 8),  o2_lo);
+        // Next 4 groups (from high 128-bit lanes):
+        _mm_storel_epi64(reinterpret_cast<__m128i*>(dst + j + 12), o0_hi);
+        _mm_storel_epi64(reinterpret_cast<__m128i*>(dst + j + 16), o1_hi);
+        _mm_storel_epi64(reinterpret_cast<__m128i*>(dst + j + 20), o2_hi);
+        j += 24;
     }
 
     // Scalar tail
