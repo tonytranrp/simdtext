@@ -1,5 +1,20 @@
 @PACKAGE_INIT@
 
+include(CMakeFindDependencyMacro)
+
+# If simdtext was built with Highway support, consumers need it too
+if("@SIMDTEXT_USE_HIGHWAY@" AND NOT TARGET hwy::hwy)
+    find_dependency(hwy CONFIG)
+endif()
+
 include("${CMAKE_CURRENT_LIST_DIR}/simdtext-targets.cmake")
 
 check_required_components(simdtext)
+
+# Provide convenience variables
+if(TARGET simdtext::simdtext)
+    set(simdtext_FOUND TRUE)
+endif()
+if(TARGET simdtext::simdtext_c)
+    set(simdtext_c_FOUND TRUE)
+endif()

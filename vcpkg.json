@@ -1,6 +1,8 @@
 {
   "name": "simdtext",
   "version": "0.1.0",
-  "description": "High-performance C++ text utilities for large buffers",
-  "dependencies": []
+  "description": "High-performance SIMD-accelerated C++ text utilities",
+  "homepage": "https://github.com/tonytranrp/simdtext",
+  "license": "MIT",
+  "dependencies": ["highway"]
 }

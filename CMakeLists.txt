@@ -14,6 +14,17 @@ option(SIMDTEXT_BUILD_CLI "Build the simdtext CLI tool" ON)
 option(SIMDTEXT_SANITIZER "Enable sanitizer (address or undefined)" "")
 option(SIMDTEXT_COVERAGE "Enable code coverage with gcov/lcov" OFF)
 
+# When included via FetchContent/add_subdirectory, skip extras by default
+if(NOT CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
+    set(SIMDTEXT_BUILD_CLI OFF CACHE BOOL "Build CLI (disabled: subproject)" FORCE)
+    set(SIMDTEXT_BUILD_TESTS OFF CACHE BOOL "Build tests (disabled: subproject)" FORCE)
+    set(SIMDTEXT_BUILD_EXAMPLES OFF CACHE BOOL "Build examples (disabled: subproject)" FORCE)
+    set(SIMDTEXT_BENCHMARKS OFF CACHE BOOL "Build benchmarks (disabled: subproject)" FORCE)
+else()
+    option(SIMDTEXT_BUILD_TESTS "Build tests" ON)
+    option(SIMDTEXT_BUILD_EXAMPLES "Build examples" ON)
+endif()
+
 # ── Sanitizer ───────────────────────────────────────────────
 
 if(SIMDTEXT_SANITIZER)
@@ -85,6 +96,18 @@ set(SIMDTEXT_INTRINSIC_SOURCES
     src/detail/simd_scalar.cpp
 )
 
+# ── Detect architecture ────────────────────────────────────
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64|i686|i386|x86")
+    set(SIMDTEXT_ARCH_X86 ON)
+    set(SIMDTEXT_ARCH_ARM OFF)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64|arm")
+    set(SIMDTEXT_ARCH_X86 OFF)
+    set(SIMDTEXT_ARCH_ARM ON)
+else()
+    set(SIMDTEXT_ARCH_X86 OFF)
+    set(SIMDTEXT_ARCH_ARM OFF)
+endif()
+
 set(SIMDTEXT_SOURCES
     src/scalar/scalar.cpp
     src/encode/encode.cpp
@@ -99,28 +122,37 @@ endif()
 
 add_library(simdtext ${SIMDTEXT_SOURCES})
 
-# ── SSE2 intrinsics object (compiled with -msse2) ─────────
-add_library(simdtext_sse2 OBJECT src/detail/simd_sse2.cpp)
-target_include_directories(simdtext_sse2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(simdtext_sse2 PRIVATE -msse2 -mno-avx)
-elseif(MSVC)
-    target_compile_options(simdtext_sse2 PRIVATE /arch:SSE2)
-endif()
-target_link_libraries(simdtext PRIVATE simdtext_sse2)
-
-# ── AVX2 intrinsics object (compiled with -mavx2) ─────────
-include(CheckCXXCompilerFlag)
-check_cxx_compiler_flag("-mavx2 -mbmi -mlzcnt" COMPILER_SUPPORTS_AVX2)
-if(COMPILER_SUPPORTS_AVX2)
-    add_library(simdtext_avx2 OBJECT src/detail/simd_avx2.cpp)
-    target_include_directories(simdtext_avx2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+# ── SSE2 intrinsics object (compiled with -msse2) — x86 only ──
+if(SIMDTEXT_ARCH_X86)
+    add_library(simdtext_sse2 OBJECT src/detail/simd_sse2.cpp)
+    target_include_directories(simdtext_sse2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_options(simdtext_avx2 PRIVATE -mavx2 -mbmi -mlzcnt -mpopcnt)
+        target_compile_options(simdtext_sse2 PRIVATE -msse2 -mno-avx)
     elseif(MSVC)
-        target_compile_options(simdtext_avx2 PRIVATE /arch:AVX2)
+        target_compile_options(simdtext_sse2 PRIVATE /arch:SSE2)
     endif()
-    target_link_libraries(simdtext PRIVATE simdtext_avx2)
+    target_link_libraries(simdtext PRIVATE simdtext_sse2)
+
+    # ── AVX2 intrinsics object (compiled with -mavx2) ─────────
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag("-mavx2 -mbmi -mlzcnt" COMPILER_SUPPORTS_AVX2)
+    if(COMPILER_SUPPORTS_AVX2)
+        add_library(simdtext_avx2 OBJECT src/detail/simd_avx2.cpp)
+        target_include_directories(simdtext_avx2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(simdtext_avx2 PRIVATE -mavx2 -mbmi -mlzcnt -mpopcnt)
+        elseif(MSVC)
+            target_compile_options(simdtext_avx2 PRIVATE /arch:AVX2)
+        endif()
+        target_link_libraries(simdtext PRIVATE simdtext_avx2)
+    endif()
+endif()
+
+# ── NEON intrinsics (ARM) ────────────────────────────────
+if(SIMDTEXT_ARCH_ARM)
+    add_library(simdtext_neon OBJECT src/detail/simd_neon.cpp)
+    target_include_directories(simdtext_neon PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(simdtext PRIVATE simdtext_neon)
 endif()
 
 target_include_directories(simdtext PUBLIC
@@ -128,11 +160,12 @@ target_include_directories(simdtext PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
+# Highway linkage — PUBLIC so consumers get it transitively
 if(SIMDTEXT_USE_HIGHWAY)
     if(hwy_FOUND)
-        target_link_libraries(simdtext PRIVATE hwy::hwy)
+        target_link_libraries(simdtext PUBLIC hwy::hwy)
     else()
-        target_link_libraries(simdtext PRIVATE hwy)
+        target_link_libraries(simdtext PUBLIC hwy)
         target_include_directories(simdtext PRIVATE ${HWY_ROOT} ${CMAKE_CURRENT_SOURCE_DIR})
     endif()
 endif()
@@ -142,25 +175,41 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(simdtext PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
 endif()
 
+# ── C API ──────────────────────────────────────────────────
+
+add_library(simdtext_c src/c/c_api.cpp)
+target_include_directories(simdtext_c PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(simdtext_c PUBLIC simdtext)
+set_target_properties(simdtext_c PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON)
+
 # ── Examples ────────────────────────────────────────────────
 
-add_executable(example_stats examples/stats.cpp)
-target_link_libraries(example_stats PRIVATE simdtext)
+if(SIMDTEXT_BUILD_EXAMPLES)
+    add_executable(example_stats examples/stats.cpp)
+    target_link_libraries(example_stats PRIVATE simdtext)
+endif()
 
-add_executable(test_simdtext
-    tests/main.cpp
-    tests/test_scan.cpp
-    tests/test_ascii.cpp
-    tests/test_lines.cpp
-    tests/test_encode.cpp
-    tests/test_url.cpp
-    tests/test_utf8.cpp
-    tests/test_file.cpp
-)
-target_include_directories(test_simdtext PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-target_link_libraries(test_simdtext PRIVATE simdtext)
-enable_testing()
-add_test(NAME simdtext_tests COMMAND test_simdtext)
+# ── Tests ───────────────────────────────────────────────────
+
+if(SIMDTEXT_BUILD_TESTS)
+    add_executable(test_simdtext
+        tests/main.cpp
+        tests/test_scan.cpp
+        tests/test_ascii.cpp
+        tests/test_lines.cpp
+        tests/test_encode.cpp
+        tests/test_url.cpp
+        tests/test_utf8.cpp
+        tests/test_file.cpp
+    )
+    target_include_directories(test_simdtext PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+    target_link_libraries(test_simdtext PRIVATE simdtext)
+    enable_testing()
+    add_test(NAME simdtext_tests COMMAND test_simdtext)
+endif()
 
 # ── CLI tool ────────────────────────────────────────────────
 
@@ -209,29 +258,32 @@ if(SIMDTEXT_BENCHMARKS)
     endif()
 endif()
 
-# ── C API ──────────────────────────────────────────────────
-
-add_library(simdtext_c src/c/c_api.cpp)
-target_include_directories(simdtext_c PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
-)
-target_link_libraries(simdtext_c PRIVATE simdtext)
-set_target_properties(simdtext_c PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON)
-
 # ── Install ─────────────────────────────────────────────────
 
 include(GNUInstallDirs)
 
-install(TARGETS simdtext simdtext_c simdtext_sse2
+install(TARGETS simdtext simdtext_c
     EXPORT simdtext-targets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-if(COMPILER_SUPPORTS_AVX2)
-    install(TARGETS simdtext_avx2
+if(SIMDTEXT_ARCH_X86)
+    install(TARGETS simdtext_sse2
+        EXPORT simdtext-targets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    )
+    if(COMPILER_SUPPORTS_AVX2)
+        install(TARGETS simdtext_avx2
+            EXPORT simdtext-targets
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        )
+    endif()
+endif()
+
+if(SIMDTEXT_ARCH_ARM)
+    install(TARGETS simdtext_neon
         EXPORT simdtext-targets
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     )
