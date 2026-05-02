@@ -6,13 +6,13 @@ Started: 2026-05-02 08:06 UTC
 ## Priority Queue
 
 ### Phase 1: C++23 Modernization & Compile Times
-- [ ] Replace raw pointers with `std::span` / `std::string_view` consistently
-- [ ] Add `constexpr` / `consteval` where possible
+- [x] Replace raw pointers with `std::span` / `std::string_view` consistently (find_byte done)
+- [ ] Add `constexpr` / `consteval` where possible (lookup tables already constexpr; hex_val needs header refactor)
 - [ ] Use `std::expected` instead of custom error handling
 - [ ] Replace `#pragma once` with include guards? (check convention)
-- [ ] Use `[[likely]]` / `[[unlikely]]` on hot path branches
+- [x] Use `[[likely]]` / `[[unlikely]]` on hot path branches (Highway backend done)
 - [ ] Replace manual dispatch with `if constexpr` where applicable
-- [ ] Audit `#include` chains for compile time reduction
+- [x] Audit `#include` chains for compile time reduction (removed scan.hpp from log.hpp, parallel.hpp)
 - [ ] Forward-declare instead of include where possible
 - [ ] Use explicit `std::span` overloads to avoid string_view → string copies
 
@@ -20,7 +20,7 @@ Started: 2026-05-02 08:06 UTC
 - [ ] SIMD UTF-8 validation (pshufb/tbl lookup4 algorithm, 5-15× potential)
 - [ ] SIMD Base64 encode/decode (pshufb reshuffle, 10-20× potential)
 - [ ] SIMD URL encode/decode (safe-byte classification, 5-10× potential)
-- [ ] Highway backend unrolling (1→4 vectors, 20-40% improvement)
+- [x] Highway backend unrolling (1→4 vectors, 20-40% improvement) — lowercase/uppercase done
 - [ ] AVX-512 runtime detection fix (already done ✅)
 - [ ] Missing sfence after non-temporal stores (already done ✅)
 
