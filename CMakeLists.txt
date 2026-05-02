@@ -164,6 +164,19 @@ if(SIMDTEXT_ARCH_X86)
         endif()
         target_link_libraries(simdtext PRIVATE simdtext_avx2)
     endif()
+
+    # ── AVX-512BW intrinsics object (compiled with -mavx512bw) ──
+    check_cxx_compiler_flag("-mavx512bw -mavx512f" COMPILER_SUPPORTS_AVX512BW)
+    if(COMPILER_SUPPORTS_AVX512BW)
+        add_library(simdtext_avx512 OBJECT src/detail/simd_avx512.cpp)
+        target_include_directories(simdtext_avx512 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(simdtext_avx512 PRIVATE -mavx512bw -mavx512f -mavx512vl -mbmi -mlzcnt -mpopcnt)
+        elseif(MSVC)
+            target_compile_options(simdtext_avx512 PRIVATE /arch:AVX512)
+        endif()
+        target_link_libraries(simdtext PRIVATE simdtext_avx512)
+    endif()
 endif()
 
 # ── NEON intrinsics (ARM) ────────────────────────────────
@@ -308,6 +321,12 @@ if(SIMDTEXT_ARCH_X86)
     )
     if(COMPILER_SUPPORTS_AVX2)
         install(TARGETS simdtext_avx2
+            EXPORT simdtext-targets
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        )
+    endif()
+    if(COMPILER_SUPPORTS_AVX512BW)
+        install(TARGETS simdtext_avx512
             EXPORT simdtext-targets
             ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         )
