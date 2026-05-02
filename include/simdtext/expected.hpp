@@ -4,8 +4,16 @@
 #include <stdexcept>
 
 // Use std::expected if available (C++23), otherwise polyfill
-#if __cpp_lib_expected >= 202202L
-#include <expected>
+#if defined(__has_include)
+#  if __has_include(<expected>)
+#    include <expected>
+#    if __cpp_lib_expected >= 202202L
+#      define SIMDTEXT_HAS_STD_EXPECTED 1
+#    endif
+#  endif
+#endif
+
+#if SIMDTEXT_HAS_STD_EXPECTED
 namespace simdtext {
     template<typename T, typename E>
     using expected = std::expected<T, E>;

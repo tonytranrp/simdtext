@@ -67,12 +67,13 @@ endif()
 # ── Highway (SIMD) ─────────────────────────────────────────
 
 if(SIMDTEXT_USE_HIGHWAY)
-    # Try find_package first, then fall back to bundled subtree
+    # Try find_package first, then fall back to FetchContent
     find_package(hwy QUIET CONFIG)
     if(hwy_FOUND)
         message(STATUS "Highway found via find_package: ${hwy_DIR}")
         add_compile_definitions(SIMDTEXT_HAVE_HWY)
     else()
+        # Try bundled subtree
         set(HWY_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/deps/highway")
         if(EXISTS "${HWY_ROOT}/CMakeLists.txt")
             set(HWY_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
@@ -81,8 +82,24 @@ if(SIMDTEXT_USE_HIGHWAY)
             add_subdirectory(${HWY_ROOT} deps/highway-build EXCLUDE_FROM_ALL)
             add_compile_definitions(SIMDTEXT_HAVE_HWY)
         else()
-            message(WARNING "Highway not found (no find_package result and no deps/highway). Building without SIMD.")
-            set(SIMDTEXT_USE_HIGHWAY OFF)
+            # Fetch Highway via FetchContent as last resort
+            include(FetchContent)
+            FetchContent_Declare(
+                highway
+                GIT_REPOSITORY https://github.com/google/highway.git
+                GIT_TAG 1.2.0
+            )
+            set(HWY_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+            set(HWY_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
+            set(HWY_ENABLE_CONTRIB OFF CACHE BOOL "" FORCE)
+            FetchContent_MakeAvailable(highway)
+            if(TARGET hwy)
+                add_compile_definitions(SIMDTEXT_HAVE_HWY)
+                message(STATUS "Highway fetched via FetchContent")
+            else()
+                message(WARNING "Highway not available. Building without SIMD Highway backend.")
+                set(SIMDTEXT_USE_HIGHWAY OFF)
+            endif()
         endif()
     endif()
 endif()
