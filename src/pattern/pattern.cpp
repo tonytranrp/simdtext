@@ -76,22 +76,23 @@ BytePattern BytePattern::from_masked(std::span<const uint8_t> bytes, std::span<c
 namespace {
 
 const uint8_t* find_pattern_scalar(
-    const uint8_t* data, size_t length, const BytePattern& pattern) noexcept
+    const uint8_t* SIMDTEXT_RESTRICT data, size_t length, const BytePattern& pattern) noexcept
 {
     const size_t pat_len = pattern.size();
     if (pat_len == 0 || pat_len > length) return nullptr;
 
-    const uint8_t* const pat_bytes = pattern.bytes().data();
-    const uint8_t* const pat_mask = pattern.masks().data();
+    const uint8_t* SIMDTEXT_RESTRICT const pat_bytes = pattern.bytes().data();
+    const uint8_t* SIMDTEXT_RESTRICT const pat_mask = pattern.masks().data();
 
-    // Find first non-wildcard byte to use as quick reject
+    // Find first and last non-wildcard byte for fast reject
     size_t first_fixed = pat_len;
+    size_t last_fixed = pat_len;
     uint8_t first_byte = 0;
+    uint8_t last_byte = 0;
     for (size_t j = 0; j < pat_len; ++j) {
         if (pat_mask[j] != 0x00) {
-            first_fixed = j;
-            first_byte = pat_bytes[j];
-            break;
+            if (first_fixed == pat_len) { first_fixed = j; first_byte = pat_bytes[j]; }
+            last_fixed = j; last_byte = pat_bytes[j];
         }
     }
 
@@ -100,9 +101,11 @@ const uint8_t* find_pattern_scalar(
     // If all wildcards, return first position
     if (first_fixed == pat_len) return data;
 
-    // Use first fixed byte for fast scanning
+    // Two-byte fast reject: check first AND last fixed byte before full match
     for (size_t i = 0; i < scan_limit; ++i) {
+        __builtin_prefetch(data + i + 64, 0, 1);
         if (data[i + first_fixed] != first_byte) continue;
+        if (last_fixed != first_fixed && data[i + last_fixed] != last_byte) continue;
 
         bool match = true;
         for (size_t j = 0; j < pat_len; ++j) {

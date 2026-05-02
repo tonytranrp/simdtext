@@ -13,13 +13,13 @@
 namespace simdtext {
 
 /// URL-encode a string. Returns bytes written, 0 on error.
-SIMDTEXT_NODISCARD SIMDTEXT_API size_t url_encode_to(std::string_view input, std::span<char> output);
+SIMDTEXT_NODISCARD SIMDTEXT_API size_t url_encode_to(std::string_view input, std::span<char> output) noexcept;
 
 /// URL-encode a string.
 SIMDTEXT_NODISCARD SIMDTEXT_API std::string url_encode(std::string_view input);
 
 /// URL-decode a string. Returns bytes written, 0 on error.
-SIMDTEXT_NODISCARD SIMDTEXT_API size_t url_decode_to(std::string_view input, std::span<char> output);
+SIMDTEXT_NODISCARD SIMDTEXT_API size_t url_decode_to(std::string_view input, std::span<char> output) noexcept;
 
 /// URL-decode a string.
 SIMDTEXT_NODISCARD SIMDTEXT_API std::string url_decode(std::string_view input);

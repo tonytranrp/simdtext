@@ -3,6 +3,26 @@
 #include <cctype>
 #include <cstring>
 
+// Hex decode lookup table — replaces branching hex_val for decode hot paths
+static constexpr std::array<int8_t, 256> hex_decode_table = {
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+     0, 1, 2, 3, 4, 5, 6, 7, 8, 9,-1,-1,-1,-1,-1,-1,
+    -1,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,
+    25,26,27,28,29,30,31,32,33,34,35,-1,-1,-1,-1,-1,
+    -1,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,
+    25,26,27,28,29,30,31,32,33,34,35,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+};
+
 namespace simdtext {
 
 // ── Hex Encode/Decode ──────────────────────────────────────
@@ -15,10 +35,20 @@ size_t hex_encode_to(std::span<const std::byte> input, std::span<char> output) {
     const size_t required = input.size() * 2;
     if (output.size() < required) return 0;
 
-    const auto* src = reinterpret_cast<const uint8_t*>(input.data());
-    auto* dst = output.data();
+    const auto* SIMDTEXT_RESTRICT src = reinterpret_cast<const uint8_t*>(input.data());
+    auto* SIMDTEXT_RESTRICT dst = output.data();
+    size_t i = 0;
 
-    for (size_t i = 0; i < input.size(); ++i) {
+    // Process 4 bytes at a time for better ILP
+    for (; i + 3 < input.size(); i += 4) {
+        const uint8_t b0 = src[i+0], b1 = src[i+1], b2 = src[i+2], b3 = src[i+3];
+        const size_t j = i * 2;
+        dst[j+0] = hex_chars[b0 >> 4];     dst[j+1] = hex_chars[b0 & 0xF];
+        dst[j+2] = hex_chars[b1 >> 4];     dst[j+3] = hex_chars[b1 & 0xF];
+        dst[j+4] = hex_chars[b2 >> 4];     dst[j+5] = hex_chars[b2 & 0xF];
+        dst[j+6] = hex_chars[b3 >> 4];     dst[j+7] = hex_chars[b3 & 0xF];
+    }
+    for (; i < input.size(); ++i) {
         dst[i * 2]     = hex_chars[src[i] >> 4];
         dst[i * 2 + 1] = hex_chars[src[i] & 0x0F];
     }
@@ -33,7 +63,7 @@ std::string hex_encode(std::span<const std::byte> input) {
 
 // hex_val is declared in simdtext.hpp and defined in url.cpp
 
-DecodeResult hex_decode_to(std::string_view input, std::span<std::byte> output) {
+DecodeResult hex_decode_to(std::string_view input, std::span<std::byte> output) noexcept {
     DecodeResult result{0, 0, ErrorCode::Ok};
 
     if (input.size() % 2 != 0) {
@@ -47,22 +77,25 @@ DecodeResult hex_decode_to(std::string_view input, std::span<std::byte> output) 
         return result;
     }
 
+    auto* SIMDTEXT_RESTRICT dst = reinterpret_cast<uint8_t*>(output.data());
+    const auto* SIMDTEXT_RESTRICT src = reinterpret_cast<const uint8_t*>(input.data());
+
     for (size_t i = 0; i < byte_count; ++i) {
-        const int hi = hex_val(input[i * 2]);
-        const int lo = hex_val(input[i * 2 + 1]);
+        const int8_t hi = hex_decode_table[src[i * 2]];
+        const int8_t lo = hex_decode_table[src[i * 2 + 1]];
         if (hi < 0 || lo < 0) {
             result.error = ErrorCode::InvalidChar;
-            result.error_offset = i * 2 + (hi < 0 ? 0 : 1);
+            result.error_offset = i * 2 + (hi < 0 ? 0u : 1u);
             return result;
         }
-        output[i] = static_cast<std::byte>((hi << 4) | lo);
+        dst[i] = static_cast<uint8_t>((static_cast<uint8_t>(hi) << 4) | static_cast<uint8_t>(lo));
     }
 
     result.bytes_written = byte_count;
     return result;
 }
 
-DecodeResult hex_decode_to(std::string_view input, std::span<char> output) {
+DecodeResult hex_decode_to(std::string_view input, std::span<char> output) noexcept {
     return hex_decode_to(input, std::span<std::byte>(
         reinterpret_cast<std::byte*>(output.data()), output.size()));
 }
@@ -140,7 +173,7 @@ std::string base64_encode(std::span<const std::byte> input) {
     return result;
 }
 
-DecodeResult base64_decode_to(std::string_view input, std::span<std::byte> output) {
+DecodeResult base64_decode_to(std::string_view input, std::span<std::byte> output) noexcept {
     DecodeResult result{0, 0, ErrorCode::Ok};
 
     if (input.size() % 4 != 0) {
@@ -159,14 +192,17 @@ DecodeResult base64_decode_to(std::string_view input, std::span<std::byte> outpu
         return result;
     }
 
-    auto* dst = reinterpret_cast<uint8_t*>(output.data());
+    auto* SIMDTEXT_RESTRICT dst = reinterpret_cast<uint8_t*>(output.data());
+    const auto* SIMDTEXT_RESTRICT src = reinterpret_cast<const uint8_t*>(input.data());
     size_t j = 0;
+    const size_t chunks = input.size() / 4;
 
-    for (size_t i = 0; i < input.size(); i += 4) {
-        const auto a = base64_table[static_cast<uint8_t>(input[i])];
-        const auto b = base64_table[static_cast<uint8_t>(input[i+1])];
-        const auto c = base64_table[static_cast<uint8_t>(input[i+2])];
-        const auto d = base64_table[static_cast<uint8_t>(input[i+3])];
+    for (size_t chunk = 0; chunk < chunks; ++chunk) {
+        const size_t i = chunk * 4;
+        const uint8_t a = base64_table[src[i]];
+        const uint8_t b = base64_table[src[i+1]];
+        const uint8_t c = base64_table[src[i+2]];
+        const uint8_t d = base64_table[src[i+3]];
 
         if (a == 64 || b == 64) {
             result.error = ErrorCode::InvalidChar;
@@ -174,21 +210,21 @@ DecodeResult base64_decode_to(std::string_view input, std::span<std::byte> outpu
             return result;
         }
 
-        const auto n = (static_cast<uint32_t>(a) << 18) |
-                       (static_cast<uint32_t>(b) << 12) |
-                       (static_cast<uint32_t>(c) << 6) |
-                       static_cast<uint32_t>(d);
+        const uint32_t n = (static_cast<uint32_t>(a) << 18) |
+                           (static_cast<uint32_t>(b) << 12) |
+                           (static_cast<uint32_t>(c) << 6) |
+                           static_cast<uint32_t>(d);
 
         dst[j++] = static_cast<uint8_t>((n >> 16) & 0xFF);
-        if (input[i+2] != '=') dst[j++] = static_cast<uint8_t>((n >> 8) & 0xFF);
-        if (input[i+3] != '=') dst[j++] = static_cast<uint8_t>(n & 0xFF);
+        if (src[i+2] != static_cast<uint8_t>('=')) dst[j++] = static_cast<uint8_t>((n >> 8) & 0xFF);
+        if (src[i+3] != static_cast<uint8_t>('=')) dst[j++] = static_cast<uint8_t>(n & 0xFF);
     }
 
     result.bytes_written = j;
     return result;
 }
 
-DecodeResult base64_decode_to(std::string_view input, std::span<char> output) {
+DecodeResult base64_decode_to(std::string_view input, std::span<char> output) noexcept {
     return base64_decode_to(input, std::span<std::byte>(
         reinterpret_cast<std::byte*>(output.data()), output.size()));
 }

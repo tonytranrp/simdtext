@@ -23,10 +23,10 @@ SIMDTEXT_NODISCARD SIMDTEXT_API size_t hex_encode_to(std::span<const std::byte> 
 SIMDTEXT_NODISCARD SIMDTEXT_API std::string hex_encode(std::span<const std::byte> input);
 
 /// Decode hexadecimal to bytes.
-SIMDTEXT_NODISCARD SIMDTEXT_API DecodeResult hex_decode_to(std::string_view input, std::span<std::byte> output);
+SIMDTEXT_NODISCARD SIMDTEXT_API DecodeResult hex_decode_to(std::string_view input, std::span<std::byte> output) noexcept;
 
 /// Decode hexadecimal to char buffer.
-SIMDTEXT_NODISCARD SIMDTEXT_API DecodeResult hex_decode_to(std::string_view input, std::span<char> output);
+SIMDTEXT_NODISCARD SIMDTEXT_API DecodeResult hex_decode_to(std::string_view input, std::span<char> output) noexcept;
 
 /// Decode hexadecimal string to byte vector.
 SIMDTEXT_NODISCARD SIMDTEXT_API std::vector<std::byte> hex_decode(std::string_view input);
@@ -40,10 +40,10 @@ SIMDTEXT_NODISCARD SIMDTEXT_API size_t base64_encode_to(std::span<const std::byt
 SIMDTEXT_NODISCARD SIMDTEXT_API std::string base64_encode(std::span<const std::byte> input);
 
 /// Decode Base64 to bytes.
-SIMDTEXT_NODISCARD SIMDTEXT_API DecodeResult base64_decode_to(std::string_view input, std::span<std::byte> output);
+SIMDTEXT_NODISCARD SIMDTEXT_API DecodeResult base64_decode_to(std::string_view input, std::span<std::byte> output) noexcept;
 
 /// Decode Base64 to char buffer.
-SIMDTEXT_NODISCARD SIMDTEXT_API DecodeResult base64_decode_to(std::string_view input, std::span<char> output);
+SIMDTEXT_NODISCARD SIMDTEXT_API DecodeResult base64_decode_to(std::string_view input, std::span<char> output) noexcept;
 
 /// Decode Base64 string to byte vector.
 SIMDTEXT_NODISCARD SIMDTEXT_API std::vector<std::byte> base64_decode(std::string_view input);

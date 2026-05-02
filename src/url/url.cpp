@@ -4,31 +4,68 @@
 
 namespace simdtext {
 
-// ── URL Encode/Decode ──────────────────────────────────────
+// ── URL-safe lookup table (branchless classify) ────────────
 
-constexpr static bool is_url_safe(char c) noexcept {
-    return (c >= 'a' && c <= 'z') ||
-           (c >= 'A' && c <= 'Z') ||
-           (c >= '0' && c <= '9') ||
-           c == '-' || c == '_' || c == '.' || c == '~';
-}
+// Bitmask: bit set = URL-safe character (unreserved per RFC 3986)
+static constexpr std::array<uint8_t, 256> url_safe_table = {
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,  // '-'=1, '.'=1
+    1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,   // '0'-'9'=1
+    0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,   // 'A'-'O'=1
+    1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,1,   // 'P'-'Z'=1, '_'=1
+    0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,   // 'a'-'o'=1
+    1,1,1,1,1,1,1,1,1,1,1,0,0,0,1,0,   // 'p'-'z'=1, '~'=1
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+};
+
+// Hex decode lookup table (same as encode.cpp, duplicated for TU locality)
+static constexpr std::array<int8_t, 256> hex_decode_table = {
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+     0, 1, 2, 3, 4, 5, 6, 7, 8, 9,-1,-1,-1,-1,-1,-1,
+    -1,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,
+    25,26,27,28,29,30,31,32,33,34,35,-1,-1,-1,-1,-1,
+    -1,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,
+    25,26,27,28,29,30,31,32,33,34,35,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+};
 
 static constexpr std::array<char, 16> url_hex = {
     '0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F'
 };
 
-size_t url_encode_to(std::string_view input, std::span<char> output) {
+size_t url_encode_to(std::string_view input, std::span<char> output) noexcept {
+    const auto* SIMDTEXT_RESTRICT src = reinterpret_cast<const uint8_t*>(input.data());
+    auto* SIMDTEXT_RESTRICT dst = output.data();
     size_t j = 0;
+    const size_t out_size = output.size();
+
     for (size_t i = 0; i < input.size(); ++i) {
-        if (is_url_safe(input[i])) {
-            if (j >= output.size()) return 0;
-            output[j++] = input[i];
+        const uint8_t uc = src[i];
+        if (url_safe_table[uc]) {
+            if (j >= out_size) return 0;
+            dst[j++] = static_cast<char>(uc);
         } else {
-            if (j + 2 >= output.size()) return 0;
-            output[j++] = '%';
-            const auto uc = static_cast<unsigned char>(input[i]);
-            output[j++] = url_hex[uc >> 4];
-            output[j++] = url_hex[uc & 0x0F];
+            if (j + 2 >= out_size) return 0;
+            dst[j++] = '%';
+            dst[j++] = url_hex[uc >> 4];
+            dst[j++] = url_hex[uc & 0x0F];
         }
     }
     return j;
@@ -37,12 +74,13 @@ size_t url_encode_to(std::string_view input, std::span<char> output) {
 std::string url_encode(std::string_view input) {
     std::string result;
     result.reserve(input.size() * 3);
-    for (const char c : input) {
-        if (is_url_safe(c)) {
-            result += c;
+    const auto* src = reinterpret_cast<const uint8_t*>(input.data());
+    for (size_t i = 0; i < input.size(); ++i) {
+        const uint8_t uc = src[i];
+        if (url_safe_table[uc]) {
+            result += static_cast<char>(uc);
         } else {
             result += '%';
-            const auto uc = static_cast<unsigned char>(c);
             result += url_hex[uc >> 4];
             result += url_hex[uc & 0x0F];
         }
@@ -50,25 +88,29 @@ std::string url_encode(std::string_view input) {
     return result;
 }
 
-size_t url_decode_to(std::string_view input, std::span<char> output) {
+size_t url_decode_to(std::string_view input, std::span<char> output) noexcept {
+    const auto* SIMDTEXT_RESTRICT src = reinterpret_cast<const uint8_t*>(input.data());
+    auto* SIMDTEXT_RESTRICT dst = output.data();
     size_t j = 0;
+    const size_t out_size = output.size();
+
     for (size_t i = 0; i < input.size(); ++i) {
-        if (input[i] == '%' && i + 2 < input.size()) {
-            const int hi = hex_val(input[i + 1]);
-            const int lo = hex_val(input[i + 2]);
+        if (src[i] == '%' && i + 2 < input.size()) {
+            const int8_t hi = hex_decode_table[src[i + 1]];
+            const int8_t lo = hex_decode_table[src[i + 2]];
             if (hi >= 0 && lo >= 0) {
-                if (j >= output.size()) return 0;
-                output[j++] = static_cast<char>((hi << 4) | lo);
+                if (j >= out_size) return 0;
+                dst[j++] = static_cast<char>((static_cast<uint8_t>(hi) << 4) | static_cast<uint8_t>(lo));
                 i += 2;
                 continue;
             }
-        } else if (input[i] == '+') {
-            if (j >= output.size()) return 0;
-            output[j++] = ' ';
+        } else if (src[i] == '+') {
+            if (j >= out_size) return 0;
+            dst[j++] = ' ';
             continue;
         }
-        if (j >= output.size()) return 0;
-        output[j++] = input[i];
+        if (j >= out_size) return 0;
+        dst[j++] = static_cast<char>(src[i]);
     }
     return j;
 }
@@ -76,20 +118,21 @@ size_t url_decode_to(std::string_view input, std::span<char> output) {
 std::string url_decode(std::string_view input) {
     std::string result;
     result.reserve(input.size());
+    const auto* src = reinterpret_cast<const uint8_t*>(input.data());
     for (size_t i = 0; i < input.size(); ++i) {
-        if (input[i] == '%' && i + 2 < input.size()) {
-            const int hi = hex_val(input[i + 1]);
-            const int lo = hex_val(input[i + 2]);
+        if (src[i] == '%' && i + 2 < input.size()) {
+            const int8_t hi = hex_decode_table[src[i + 1]];
+            const int8_t lo = hex_decode_table[src[i + 2]];
             if (hi >= 0 && lo >= 0) {
-                result += static_cast<char>((hi << 4) | lo);
+                result += static_cast<char>((static_cast<uint8_t>(hi) << 4) | static_cast<uint8_t>(lo));
                 i += 2;
                 continue;
             }
-        } else if (input[i] == '+') {
+        } else if (src[i] == '+') {
             result += ' ';
             continue;
         }
-        result += input[i];
+        result += static_cast<char>(src[i]);
     }
     return result;
 }
@@ -103,7 +146,6 @@ std::unordered_map<std::string, std::string> parse_query(std::string_view query)
         query.remove_prefix(1);
     }
 
-    // Empty query after stripping '?' produces no params
     if (query.empty()) return params;
 
     for (const auto pair : split(query, '&')) {
@@ -122,10 +164,7 @@ std::unordered_map<std::string, std::string> parse_query(std::string_view query)
 
 // Internal helper used by encode.cpp and url.cpp
 int hex_val(char c) noexcept {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
+    return hex_decode_table[static_cast<uint8_t>(c)];
 }
 
 } // namespace simdtext

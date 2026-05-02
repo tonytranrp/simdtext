@@ -78,3 +78,12 @@
 #else
     #define SIMDTEXT_UNREACHABLE() do { } while(0)
 #endif
+
+// Restrict pointer aliasing hint
+#if defined(__GNUC__) || defined(__clang__)
+    #define SIMDTEXT_RESTRICT __restrict__
+#elif defined(_MSC_VER)
+    #define SIMDTEXT_RESTRICT __restrict
+#else
+    #define SIMDTEXT_RESTRICT
+#endif
