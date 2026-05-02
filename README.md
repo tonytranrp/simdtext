@@ -74,6 +74,10 @@ You're processing logs, network data, config files, or game assets — millions 
 
 - 🚀 **SIMD-accelerated** — `count_byte`, `is_ascii`, `lowercase/uppercase`, `find_byte`, `valid_utf8` use Google Highway (SSE2 → AVX2 → AVX-512, NEON)
 - 💾 **Zero allocation** — `LineView`, `SplitView`, `trim_ascii` return `string_view`; `_to` variants write to caller buffers
+- 🧵 **Multi-threaded** — `parallel_count_byte`, `parallel_is_ascii`, `parallel_valid_utf8` and more via `parallel.hpp`
+- 🔍 **Pattern scanning** — Find byte patterns with wildcard support via `pattern.hpp`
+- #️⃣ **Fast hashing** — FNV-1a (constexpr), CRC32/CRC32C (hardware), xxHash64, Wyhash
+- ✂️ **String utilities** — `trim`, `replace_all`, `fields`, `split_vec`, `starts_with`, `ends_with`
 - 📄 **Memory-mapped files** — process files larger than RAM via `MappedFile` and `FileScanner`
 - 🔧 **CLI tool** — `simdtext stats`, `simdtext grep`, `simdtext validate-utf8`, and more
 - 🔗 **C API** — FFI-friendly for Rust, Python, Ruby, etc.
@@ -171,6 +175,51 @@ int main() {
 |----------|-----------|-------------|
 | `valid_utf8` | `bool(span<const char>)` | Validate UTF-8 encoding |
 
+### Pattern Scanning (`<simdtext/pattern.hpp>`)
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `find_pattern` | `const char*(string_view, string_view hex)` | Find byte pattern with wildcards (`??` = any) |
+| `byte_pattern_parse` | `BytePattern(string_view hex)` | Parse hex pattern into bytes/masks |
+
+### Parallel Processing (`<simdtext/parallel.hpp>`)
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `parallel_count_byte` | `size_t(string_view, char, ParallelOptions)` | Multi-threaded byte counting |
+| `parallel_is_ascii` | `bool(string_view, ParallelOptions)` | Multi-threaded ASCII check |
+| `parallel_count_newlines` | `size_t(string_view, ParallelOptions)` | Multi-threaded newline counting |
+| `parallel_find_byte` | `const char*(string_view, char, ParallelOptions)` | Multi-threaded byte search |
+| `parallel_valid_utf8` | `bool(string_view, ParallelOptions)` | Multi-threaded UTF-8 validation |
+| `parallel_for_each_chunk` | `void(string_view, callback, ParallelOptions)` | Parallel chunk processing |
+
+### Hashing (`<simdtext/hash.hpp>`)
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `fnv1a` | `uint64_t(string_view) constexpr` | Compile-time FNV-1a hash |
+| `SIMDTEXT_HASH` | Macro | Switch-case string matching |
+| `crc32` | `uint32_t(string_view) noexcept` | CRC32 (hardware-accelerated) |
+| `crc32c` | `uint32_t(string_view) noexcept` | CRC32C Castagnoli (hardware-accelerated) |
+| `xxhash64` | `uint64_t(string_view) noexcept` | xxHash-64 fast non-crypto hash |
+| `wyhash` | `uint64_t(string_view) noexcept` | Wyhash fast non-crypto hash |
+
+### String Utilities (`<simdtext/str.hpp>`)
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `trim_left` | `string_view(string_view)` | Trim leading whitespace |
+| `trim_right` | `string_view(string_view)` | Trim trailing whitespace |
+| `trim` | `string_view(string_view)` | Trim both ends |
+| `replace_all` | `string(string_view, char, char)` | Replace all occurrences of a char |
+| `replace_all` | `string(string_view, string_view, string_view)` | Replace all occurrences of a substring |
+| `fields` | `vector<string_view>(string_view)` | Split by whitespace, skip empty |
+| `split_vec` | `vector<string_view>(string_view, char)` | Split by delimiter |
+| `split_into` | `size_t(string_view, char, string_view*, size_t)` | Split into pre-allocated buffer |
+| `starts_with` | `bool(string_view, string_view)` | Check prefix |
+| `ends_with` | `bool(string_view, string_view)` | Check suffix |
+| `contains_char` | `bool(string_view, char)` | Check if char exists (SIMD) |
+
 ### File I/O (`<simdtext/file.hpp>`)
 
 | Class | Key Methods | Description |
@@ -212,7 +261,7 @@ include(FetchContent)
 FetchContent_Declare(
     simdtext
     GIT_REPOSITORY https://github.com/tonytran-ai/simdtext.git
-    GIT_TAG        v0.1.0
+    GIT_TAG        v0.2.0
 )
 FetchContent_MakeAvailable(simdtext)
 target_link_libraries(my_app PRIVATE simdtext)
@@ -224,7 +273,7 @@ target_link_libraries(my_app PRIVATE simdtext)
 CPMAddPackage(
     NAME simdtext
     GITHUB_REPOSITORY tonytran-ai/simdtext
-    GIT_TAG v0.1.0
+    GIT_TAG v0.2.0
 )
 target_link_libraries(my_app PRIVATE simdtext)
 ```
