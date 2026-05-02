@@ -24,3 +24,4 @@
 #include <simdtext/csv.hpp>
 #include <simdtext/diff.hpp>
 #include <simdtext/log.hpp>
+#include <simdtext/xml.hpp>
