@@ -30,7 +30,7 @@ size_t count_byte_vec(D d, const uint8_t* HWY_RESTRICT ptr, size_t size, uint8_t
         count += hn::CountTrue(d, hn::Eq(hn::LoadU(d, ptr + i), vbyte));
     }
     for (; i < size; ++i) {
-        if (ptr[i] == byte) ++count;
+        if (ptr[i] == byte) [[unlikely]] ++count;
     }
     return count;
 }
@@ -60,7 +60,7 @@ bool is_ascii_vec(D d, const uint8_t* HWY_RESTRICT ptr, size_t size) {
         if (!hn::AllFalse(d, hn::Ne(high, hn::Zero(d)))) return false;
     }
     for (; i < size; ++i) {
-        if (ptr[i] >= 0x80) return false;
+        if (ptr[i] >= 0x80) [[unlikely]] return false;
     }
     return true;
 }
@@ -73,13 +73,27 @@ void lowercase_ascii_vec(D d, uint8_t* HWY_RESTRICT ptr, size_t size) {
     const size_t N = hn::Lanes(d);
 
     size_t i = 0;
+    for (; i + 4 * N <= size; i += 4 * N) {
+        auto v0 = hn::LoadU(d, ptr + i);
+        auto v1 = hn::LoadU(d, ptr + i + N);
+        auto v2 = hn::LoadU(d, ptr + i + 2 * N);
+        auto v3 = hn::LoadU(d, ptr + i + 3 * N);
+        v0 = hn::IfThenElse(hn::And(hn::Ge(v0, vA), hn::Le(v0, vZ)), hn::Or(v0, vbit), v0);
+        v1 = hn::IfThenElse(hn::And(hn::Ge(v1, vA), hn::Le(v1, vZ)), hn::Or(v1, vbit), v1);
+        v2 = hn::IfThenElse(hn::And(hn::Ge(v2, vA), hn::Le(v2, vZ)), hn::Or(v2, vbit), v2);
+        v3 = hn::IfThenElse(hn::And(hn::Ge(v3, vA), hn::Le(v3, vZ)), hn::Or(v3, vbit), v3);
+        hn::StoreU(v0, d, ptr + i);
+        hn::StoreU(v1, d, ptr + i + N);
+        hn::StoreU(v2, d, ptr + i + 2 * N);
+        hn::StoreU(v3, d, ptr + i + 3 * N);
+    }
     for (; i + N <= size; i += N) {
         auto v = hn::LoadU(d, ptr + i);
         v = hn::IfThenElse(hn::And(hn::Ge(v, vA), hn::Le(v, vZ)), hn::Or(v, vbit), v);
         hn::StoreU(v, d, ptr + i);
     }
     for (; i < size; ++i) {
-        if (ptr[i] >= 'A' && ptr[i] <= 'Z') ptr[i] |= 0x20;
+        if (ptr[i] >= 'A' && ptr[i] <= 'Z') [[unlikely]] ptr[i] |= 0x20;
     }
 }
 
@@ -91,13 +105,27 @@ void uppercase_ascii_vec(D d, uint8_t* HWY_RESTRICT ptr, size_t size) {
     const size_t N = hn::Lanes(d);
 
     size_t i = 0;
+    for (; i + 4 * N <= size; i += 4 * N) {
+        auto v0 = hn::LoadU(d, ptr + i);
+        auto v1 = hn::LoadU(d, ptr + i + N);
+        auto v2 = hn::LoadU(d, ptr + i + 2 * N);
+        auto v3 = hn::LoadU(d, ptr + i + 3 * N);
+        v0 = hn::IfThenElse(hn::And(hn::Ge(v0, va), hn::Le(v0, vz)), hn::AndNot(vbit, v0), v0);
+        v1 = hn::IfThenElse(hn::And(hn::Ge(v1, va), hn::Le(v1, vz)), hn::AndNot(vbit, v1), v1);
+        v2 = hn::IfThenElse(hn::And(hn::Ge(v2, va), hn::Le(v2, vz)), hn::AndNot(vbit, v2), v2);
+        v3 = hn::IfThenElse(hn::And(hn::Ge(v3, va), hn::Le(v3, vz)), hn::AndNot(vbit, v3), v3);
+        hn::StoreU(v0, d, ptr + i);
+        hn::StoreU(v1, d, ptr + i + N);
+        hn::StoreU(v2, d, ptr + i + 2 * N);
+        hn::StoreU(v3, d, ptr + i + 3 * N);
+    }
     for (; i + N <= size; i += N) {
         auto v = hn::LoadU(d, ptr + i);
         v = hn::IfThenElse(hn::And(hn::Ge(v, va), hn::Le(v, vz)), hn::AndNot(vbit, v), v);
         hn::StoreU(v, d, ptr + i);
     }
     for (; i < size; ++i) {
-        if (ptr[i] >= 'a' && ptr[i] <= 'z') ptr[i] &= ~0x20;
+        if (ptr[i] >= 'a' && ptr[i] <= 'z') [[unlikely]] ptr[i] &= ~0x20;
     }
 }
 
@@ -107,12 +135,31 @@ const char* find_byte_vec(D d, const uint8_t* HWY_RESTRICT ptr, size_t size, uin
     const size_t N = hn::Lanes(d);
 
     size_t i = 0;
+    // 4× unrolled: process 4 vectors before looping back
+    for (; i + 4 * N <= size; i += 4 * N) {
+        const auto eq0 = hn::Eq(hn::LoadU(d, ptr + i), vbyte);
+        const auto eq1 = hn::Eq(hn::LoadU(d, ptr + i + N), vbyte);
+        const auto eq2 = hn::Eq(hn::LoadU(d, ptr + i + 2 * N), vbyte);
+        const auto eq3 = hn::Eq(hn::LoadU(d, ptr + i + 3 * N), vbyte);
+        // Combine all matches to reduce branches
+        const auto any = hn::Or(hn::Or(eq0, eq1), hn::Or(eq2, eq3));
+        if (hn::AllTrue(d, hn::Not(any))) continue;
+        // Found a match — check which vector has it
+        const intptr_t lane0 = hn::FindFirstTrue(d, eq0);
+        if (lane0 >= 0) return base + i + static_cast<size_t>(lane0);
+        const intptr_t lane1 = hn::FindFirstTrue(d, eq1);
+        if (lane1 >= 0) return base + i + N + static_cast<size_t>(lane1);
+        const intptr_t lane2 = hn::FindFirstTrue(d, eq2);
+        if (lane2 >= 0) return base + i + 2 * N + static_cast<size_t>(lane2);
+        const intptr_t lane3 = hn::FindFirstTrue(d, eq3);
+        if (lane3 >= 0) return base + i + 3 * N + static_cast<size_t>(lane3);
+    }
     for (; i + N <= size; i += N) {
         const intptr_t lane = hn::FindFirstTrue(d, hn::Eq(hn::LoadU(d, ptr + i), vbyte));
         if (lane >= 0) return base + i + static_cast<size_t>(lane);
     }
     for (; i < size; ++i) {
-        if (ptr[i] == byte) return base + i;
+        if (ptr[i] == byte) [[unlikely]] return base + i;
     }
     return base + size;
 }
@@ -246,23 +293,23 @@ static bool scalar_validate_utf8(const uint8_t* ptr, size_t size) {
     const auto* end = ptr + size;
     while (p < end) {
         const auto byte = *p++;
-        if (byte <= 0x7F) continue;
+        if (byte <= 0x7F) [[likely]] continue;
         else if ((byte & 0xE0) == 0xC0) {
-            if (p >= end || (*p & 0xC0) != 0x80) return false;
-            if (byte < 0xC2) return false;
+            if (p >= end || (*p & 0xC0) != 0x80) [[unlikely]] return false;
+            if (byte < 0xC2) [[unlikely]] return false;
             ++p;
         } else if ((byte & 0xF0) == 0xE0) {
-            if (p + 1 >= end || (*p & 0xC0) != 0x80 || (*(p+1) & 0xC0) != 0x80) return false;
-            if (byte == 0xE0 && *p < 0xA0) return false;
-            if (byte == 0xED && *p > 0x9F) return false;
+            if (p + 1 >= end || (*p & 0xC0) != 0x80 || (*(p+1) & 0xC0) != 0x80) [[unlikely]] return false;
+            if (byte == 0xE0 && *p < 0xA0) [[unlikely]] return false;
+            if (byte == 0xED && *p > 0x9F) [[unlikely]] return false;
             p += 2;
         } else if ((byte & 0xF8) == 0xF0) {
-            if (p + 2 >= end || (*p & 0xC0) != 0x80 || (*(p+1) & 0xC0) != 0x80 || (*(p+2) & 0xC0) != 0x80) return false;
-            if (byte == 0xF0 && *p < 0x90) return false;
-            if (byte > 0xF4) return false;
-            if (byte == 0xF4 && *p > 0x8F) return false;
+            if (p + 2 >= end || (*p & 0xC0) != 0x80 || (*(p+1) & 0xC0) != 0x80 || (*(p+2) & 0xC0) != 0x80) [[unlikely]] return false;
+            if (byte == 0xF0 && *p < 0x90) [[unlikely]] return false;
+            if (byte > 0xF4) [[unlikely]] return false;
+            if (byte == 0xF4 && *p > 0x8F) [[unlikely]] return false;
             p += 3;
-        } else return false;
+        } else [[unlikely]] return false;
     }
     return true;
 }
@@ -273,7 +320,7 @@ bool validate_utf8_vec(D d, const uint8_t* HWY_RESTRICT ptr, size_t size) {
     const auto v80 = hn::Set(d, uint8_t(0x80));
 
     // Fast path: if ALL bytes are ASCII, it's valid UTF-8
-    if (is_ascii_vec(d, ptr, size)) return true;
+    if (is_ascii_vec(d, ptr, size)) [[likely]] return true;
 
     // Slow path: non-ASCII bytes present.
     // Use lookup-table SIMD for large inputs, scalar for small.
