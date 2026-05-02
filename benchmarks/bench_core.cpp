@@ -338,6 +338,18 @@ static void BM_URLDecode_Scalar(benchmark::State& state) {
 BENCHMARK(BM_URLDecode_SimdText)->Arg(1024)->Arg(65536)->Arg(1<<20)->Arg(1<<24);
 BENCHMARK(BM_URLDecode_Scalar)->Arg(1024)->Arg(65536)->Arg(1<<20)->Arg(1<<24);
 
+static void BM_URLEncode_SimdText(benchmark::State& state) {
+    const size_t size = state.range(0);
+    auto data = make_data(size);
+    for (auto _ : state) {
+        auto result = simdtext::url_encode(data);
+        benchmark::DoNotOptimize(result.data());
+    }
+    state.SetBytesProcessed(state.iterations() * size);
+}
+
+BENCHMARK(BM_URLEncode_SimdText)->Arg(1024)->Arg(65536)->Arg(1<<20)->Arg(1<<24);
+
 // ═══════════════════════════════════════════════════════════
 //  UTF-8 VALIDATION
 // ═══════════════════════════════════════════════════════════

@@ -165,9 +165,8 @@ void lowercase_ascii(char* data, size_t size) {
     const __m256i vA = _mm256_set1_epi8('A' - 1);
     const __m256i vZ1 = _mm256_set1_epi8('Z' + 1);
     const __m256i vbit5 = _mm256_set1_epi8(0x20);
-    // Non-temporal store threshold: ~2MB (half of typical L3)
-    const size_t nontemporal_threshold = 2 * 1024 * 1024;
-    const bool use_nontemporal = size > nontemporal_threshold;
+    // Note: non-temporal (streaming) stores removed — they bypass cache and
+    // cause thrashing on in-place read-modify-write patterns.
     size_t i = 0;
     for (; i + 32 <= size; i += 32) {
         __m256i chunk = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i));
@@ -175,10 +174,7 @@ void lowercase_ascii(char* data, size_t size) {
         __m256i le_Z = _mm256_cmpgt_epi8(vZ1, chunk);
         __m256i is_upper = _mm256_and_si256(ge_A, le_Z);
         __m256i lowered = _mm256_xor_si256(chunk, _mm256_and_si256(is_upper, vbit5));
-        if (use_nontemporal)
-            _mm256_stream_si256(reinterpret_cast<__m256i*>(data + i), lowered);
-        else
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(data + i), lowered);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(data + i), lowered);
     }
     // Tail with SSE2
     if (i + 16 <= size) {
@@ -193,7 +189,6 @@ void lowercase_ascii(char* data, size_t size) {
         _mm_storeu_si128(reinterpret_cast<__m128i*>(data + i), lowered);
         i += 16;
     }
-    if (use_nontemporal) _mm_sfence();
     for (; i < size; ++i) {
         auto c = static_cast<unsigned char>(data[i]);
         if (c >= 'A' && c <= 'Z') data[i] = static_cast<char>(c ^ 0x20);
@@ -204,9 +199,8 @@ void uppercase_ascii(char* data, size_t size) {
     const __m256i va = _mm256_set1_epi8('a' - 1);
     const __m256i vz1 = _mm256_set1_epi8('z' + 1);
     const __m256i vbit5 = _mm256_set1_epi8(0x20);
-    // Non-temporal store threshold: ~2MB (half of typical L3)
-    const size_t nontemporal_threshold = 2 * 1024 * 1024;
-    const bool use_nontemporal = size > nontemporal_threshold;
+    // Note: non-temporal (streaming) stores removed — they bypass cache and
+    // cause thrashing on in-place read-modify-write patterns.
     size_t i = 0;
     for (; i + 32 <= size; i += 32) {
         __m256i chunk = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i));
@@ -214,10 +208,7 @@ void uppercase_ascii(char* data, size_t size) {
         __m256i le_z = _mm256_cmpgt_epi8(vz1, chunk);
         __m256i is_lower = _mm256_and_si256(ge_a, le_z);
         __m256i uppered = _mm256_xor_si256(chunk, _mm256_and_si256(is_lower, vbit5));
-        if (use_nontemporal)
-            _mm256_stream_si256(reinterpret_cast<__m256i*>(data + i), uppered);
-        else
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(data + i), uppered);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(data + i), uppered);
     }
     // Tail with SSE2
     if (i + 16 <= size) {
@@ -232,7 +223,6 @@ void uppercase_ascii(char* data, size_t size) {
         _mm_storeu_si128(reinterpret_cast<__m128i*>(data + i), uppered);
         i += 16;
     }
-    if (use_nontemporal) _mm_sfence();
     for (; i < size; ++i) {
         auto c = static_cast<unsigned char>(data[i]);
         if (c >= 'a' && c <= 'z') data[i] = static_cast<char>(c ^ 0x20);

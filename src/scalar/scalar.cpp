@@ -114,12 +114,17 @@ LineView::Iterator::Iterator(std::string_view remaining)
 }
 
 void LineView::Iterator::advance() {
-    const auto pos = remaining_.find('\n');
-    if (pos == std::string_view::npos) {
+    // Use SIMD-accelerated find_byte instead of string_view::find
+    const char* data = remaining_.data();
+    size_t size = remaining_.size();
+    const char* found = find_byte(std::span<const char>{data, size}, '\n');
+    const char* end = data + size;
+    if (found == end) {
         line_ = remaining_;
         has_value_ = true;
         remaining_ = {};
     } else {
+        size_t pos = static_cast<size_t>(found - data);
         line_ = remaining_.substr(0, pos);
         remaining_ = remaining_.substr(pos + 1);
         has_value_ = true;
@@ -154,12 +159,17 @@ SplitView::Iterator::Iterator(std::string_view remaining, char delim)
 }
 
 void SplitView::Iterator::advance() {
-    const auto pos = remaining_.find(delim_);
-    if (pos == std::string_view::npos) {
+    // Use SIMD-accelerated find_byte instead of string_view::find
+    const char* data = remaining_.data();
+    size_t size = remaining_.size();
+    const char* found = find_byte(std::span<const char>{data, size}, delim_);
+    const char* end = data + size;
+    if (found == end) {
         segment_ = remaining_;
         has_value_ = true;
         remaining_ = {};
     } else {
+        size_t pos = static_cast<size_t>(found - data);
         segment_ = remaining_.substr(0, pos);
         remaining_ = remaining_.substr(pos + 1);
         has_value_ = true;

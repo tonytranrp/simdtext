@@ -4,6 +4,12 @@
 
 namespace simdtext {
 
+#ifdef SIMDTEXT_HAVE_HWY
+// Forward declarations — implementations in src/highway/simd_hwy.cpp
+size_t url_encode_to_hwy(const uint8_t* src, size_t src_size, char* dst, size_t dst_size);
+std::string url_encode_hwy(const uint8_t* src, size_t src_size);
+#endif
+
 // ── URL-safe lookup table (branchless classify) ────────────
 
 // Bitmask: bit set = URL-safe character (unreserved per RFC 3986)
@@ -51,6 +57,12 @@ static constexpr std::array<char, 16> url_hex = {
 };
 
 size_t url_encode_to(std::string_view input, std::span<char> output) noexcept {
+#ifdef SIMDTEXT_HAVE_HWY
+    if (input.size() >= 32) {
+        return url_encode_to_hwy(reinterpret_cast<const uint8_t*>(input.data()),
+                                  input.size(), output.data(), output.size());
+    }
+#endif
     const auto* SIMDTEXT_RESTRICT src = reinterpret_cast<const uint8_t*>(input.data());
     auto* SIMDTEXT_RESTRICT dst = output.data();
     size_t j = 0;
@@ -72,6 +84,11 @@ size_t url_encode_to(std::string_view input, std::span<char> output) noexcept {
 }
 
 std::string url_encode(std::string_view input) {
+#ifdef SIMDTEXT_HAVE_HWY
+    if (input.size() >= 32) {
+        return url_encode_hwy(reinterpret_cast<const uint8_t*>(input.data()), input.size());
+    }
+#endif
     std::string result;
     result.reserve(input.size() * 3);
     const auto* src = reinterpret_cast<const uint8_t*>(input.data());

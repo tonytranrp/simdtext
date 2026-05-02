@@ -105,9 +105,8 @@ void lowercase_ascii(char* data, size_t size) {
     const __m128i vA = _mm_set1_epi8('A' - 1);
     const __m128i vZ1 = _mm_set1_epi8('Z' + 1);
     const __m128i vbit5 = _mm_set1_epi8(0x20);
-    // Non-temporal store threshold: ~2MB (half of typical L3)
-    const size_t nontemporal_threshold = 2 * 1024 * 1024;
-    const bool use_nontemporal = size > nontemporal_threshold;
+    // Note: non-temporal (streaming) stores removed — they bypass cache and
+    // cause thrashing on in-place read-modify-write patterns.
     size_t i = 0;
     for (; i + 16 <= size; i += 16) {
         __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i));
@@ -115,12 +114,8 @@ void lowercase_ascii(char* data, size_t size) {
         __m128i not_below = _mm_cmpgt_epi8(chunk, vA);
         __m128i is_upper = _mm_and_si128(not_above, not_below);
         __m128i lowered = _mm_xor_si128(chunk, _mm_and_si128(is_upper, vbit5));
-        if (use_nontemporal)
-            _mm_stream_si128(reinterpret_cast<__m128i*>(data + i), lowered);
-        else
-            _mm_storeu_si128(reinterpret_cast<__m128i*>(data + i), lowered);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(data + i), lowered);
     }
-    if (use_nontemporal) _mm_sfence();
     for (; i < size; ++i) {
         auto c = static_cast<unsigned char>(data[i]);
         if (c >= 'A' && c <= 'Z') data[i] = static_cast<char>(c ^ 0x20);
@@ -131,9 +126,8 @@ void uppercase_ascii(char* data, size_t size) {
     const __m128i va = _mm_set1_epi8('a' - 1);
     const __m128i vz1 = _mm_set1_epi8('z' + 1);
     const __m128i vbit5 = _mm_set1_epi8(0x20);
-    // Non-temporal store threshold: ~2MB (half of typical L3)
-    const size_t nontemporal_threshold = 2 * 1024 * 1024;
-    const bool use_nontemporal = size > nontemporal_threshold;
+    // Note: non-temporal (streaming) stores removed — they bypass cache and
+    // cause thrashing on in-place read-modify-write patterns.
     size_t i = 0;
     for (; i + 16 <= size; i += 16) {
         __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i));
@@ -141,12 +135,8 @@ void uppercase_ascii(char* data, size_t size) {
         __m128i not_below = _mm_cmpgt_epi8(chunk, va);
         __m128i is_lower = _mm_and_si128(not_above, not_below);
         __m128i uppered = _mm_xor_si128(chunk, _mm_and_si128(is_lower, vbit5));
-        if (use_nontemporal)
-            _mm_stream_si128(reinterpret_cast<__m128i*>(data + i), uppered);
-        else
-            _mm_storeu_si128(reinterpret_cast<__m128i*>(data + i), uppered);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(data + i), uppered);
     }
-    if (use_nontemporal) _mm_sfence();
     for (; i < size; ++i) {
         auto c = static_cast<unsigned char>(data[i]);
         if (c >= 'a' && c <= 'z') data[i] = static_cast<char>(c ^ 0x20);
