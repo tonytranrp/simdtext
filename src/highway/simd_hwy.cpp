@@ -15,9 +15,18 @@ template <class D>
 size_t count_byte_vec(D d, const uint8_t* HWY_RESTRICT ptr, size_t size, uint8_t byte) {
     const auto vbyte = hn::Set(d, byte);
     const size_t N = hn::Lanes(d);
-    size_t count = 0;
 
+    // ILP-friendly: 4× unrolled accumulation to break dependency chain
+    size_t c0 = 0, c1 = 0, c2 = 0, c3 = 0;
     size_t i = 0;
+    for (; i + 4 * N <= size; i += 4 * N) {
+        c0 += hn::CountTrue(d, hn::Eq(hn::LoadU(d, ptr + i),         vbyte));
+        c1 += hn::CountTrue(d, hn::Eq(hn::LoadU(d, ptr + i + N),     vbyte));
+        c2 += hn::CountTrue(d, hn::Eq(hn::LoadU(d, ptr + i + 2 * N), vbyte));
+        c3 += hn::CountTrue(d, hn::Eq(hn::LoadU(d, ptr + i + 3 * N), vbyte));
+    }
+    size_t count = c0 + c1 + c2 + c3;
+    // Handle remaining full vectors
     for (; i + N <= size; i += N) {
         count += hn::CountTrue(d, hn::Eq(hn::LoadU(d, ptr + i), vbyte));
     }
@@ -32,13 +41,30 @@ template <class D>
 bool is_ascii_vec(D d, const uint8_t* HWY_RESTRICT ptr, size_t size) {
     const size_t N = hn::Lanes(d);
 
+    // ILP-friendly: 4x unrolled OR accumulation
+    // Instead of early-exiting each vector, OR 4 vectors together and check once
     size_t i = 0;
+    auto acc0 = hn::Zero(d);
+    auto acc1 = hn::Zero(d);
+    auto acc2 = hn::Zero(d);
+    auto acc3 = hn::Zero(d);
+    for (; i + 4 * N <= size; i += 4 * N) {
+        acc0 = hn::Or(acc0, hn::LoadU(d, ptr + i));
+        acc1 = hn::Or(acc1, hn::LoadU(d, ptr + i + N));
+        acc2 = hn::Or(acc2, hn::LoadU(d, ptr + i + 2 * N));
+        acc3 = hn::Or(acc3, hn::LoadU(d, ptr + i + 3 * N));
+    }
+    // Check combined: if any byte has bit 7 set, it's not ASCII
+    auto combined = hn::Or(hn::Or(acc0, acc1), hn::Or(acc2, acc3));
+    const auto high_bit = hn::Set(d, uint8_t(0x80));
+    if (!hn::AllFalse(d, hn::Ne(hn::And(combined, high_bit), hn::Zero(d)))) return false;
+    // Remaining full vectors
     for (; i + N <= size; i += N) {
         const auto v = hn::LoadU(d, ptr + i);
-        const auto high = hn::And(v, hn::Set(d, uint8_t(0x80)));
-        // AllFalse returns true if all lanes are false
+        const auto high = hn::And(v, high_bit);
         if (!hn::AllFalse(d, hn::Ne(high, hn::Zero(d)))) return false;
     }
+    // Tail
     for (; i < size; ++i) {
         if (ptr[i] >= 0x80) return false;
     }

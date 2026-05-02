@@ -200,13 +200,16 @@ bool Utf8Validator::validate(std::string_view chunk) noexcept {
                 // 2-byte lead: 110xxxxx
                 if (byte < 0xC2) return false; // overlong
                 state_ = 1;
+                saved_lead_ = byte;
             } else if ((byte & 0xF0) == 0xE0) {
                 // 3-byte lead: 1110xxxx
                 state_ = 2;
+                saved_lead_ = byte;
             } else if ((byte & 0xF8) == 0xF0) {
                 // 4-byte lead: 11110xxx
                 if (byte > 0xF4) return false; // > U+10FFFF
                 state_ = 3;
+                saved_lead_ = byte;
             } else {
                 return false; // invalid lead byte (0x80-0xBF or 0xF5-0xFF)
             }
@@ -216,10 +219,18 @@ bool Utf8Validator::validate(std::string_view chunk) noexcept {
 
             // Range checks for specific lead bytes
             if (state_ == 2) {
-                // After E0, next byte must be A0-BF
-                // After ED, next byte must be 80-9F (no surrogates)
-                // For simplicity, we just decrement and continue
-                // The full range checks are handled by the SIMD validator
+                // After E0, next byte must be A0-BF (reject overlong C0/C1 + 80-BF)
+                // After ED, next byte must be 80-9F (reject surrogates D800-DFFF)
+                // We check the *first* continuation byte (byte we just read)
+                // saved_lead_ holds the lead byte
+                if (saved_lead_ == 0xE0 && byte < 0xA0) return false; // overlong E0 80-9F
+                if (saved_lead_ == 0xED && byte > 0x9F) return false; // surrogate ED A0-BF
+            }
+            if (state_ == 3) {
+                // After F0, first continuation byte must be 90-BF (reject overlong F0 80-8F)
+                // After F4, first continuation byte must be 80-8F (reject > U+10FFFF)
+                if (saved_lead_ == 0xF0 && byte < 0x90) return false; // overlong F0 80-8F
+                if (saved_lead_ == 0xF4 && byte > 0x8F) return false; // > U+10FFFF
             }
             state_--;
         }

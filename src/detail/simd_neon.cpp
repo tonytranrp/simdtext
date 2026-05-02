@@ -117,5 +117,23 @@ const char* find_byte(const char* data, size_t size, char byte) {
     for (; i + 16 <= size; i += 16) {
         uint8x16_t chunk = vld1q_u8(reinterpret_cast<const uint8_t*>(data + i));
         uint8x16_t eq = vceqq_u8(chunk, vbyte);
-        // Use NEON narrowing to extract match mask efficiently
-        // Store the 16 comparison bytes and scan
+        // Shrink 16 comparison bytes to a bitmask via pairwise add + extract
+        // Each matched byte is 0xFF (255). Narrow to 8-bit mask via vminv.
+        // Faster: use narrowing shift-right-then-narrow to get a 64-bit mask.
+        uint8x16_t shifted = vshrq_n_u8(eq, 7); // 1 per match, 0 per non-match
+        // Pack 16 bits into a 64-bit value using pairwise adds
+        uint16x8_t sum16 = vpaddlq_u8(shifted);
+        uint32x4_t sum32 = vpaddlq_u16(sum16);
+        uint64x2_t sum64 = vpaddlq_u32(sum32);
+        uint64_t mask = vgetq_lane_u64(sum64, 0) | (vgetq_lane_u64(sum64, 1) << 8);
+        if (mask != 0) {
+            // Find the first set bit (first match position)
+            unsigned int bit_pos = __builtin_ctzll(mask);
+            return data + i + bit_pos;
+        }
+    }
+    // Scalar tail
+    for (; i < size; ++i)
+        if (data[i] == byte) return data + i;
+    return data + size;
+}

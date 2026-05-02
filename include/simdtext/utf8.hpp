@@ -28,7 +28,7 @@ SIMDTEXT_NODISCARD SIMDTEXT_API Utf8Result validate_utf8_detailed(std::string_vi
 /// Handles state across chunk boundaries for multi-byte sequences.
 class SIMDTEXT_API Utf8Validator {
 public:
-    Utf8Validator() : state_(0) {}
+    Utf8Validator() : state_(0), saved_lead_(0) {}
 
     /// Validate a chunk. Returns false if invalid UTF-8 is found.
     /// Call finalize() after the last chunk to check trailing state.
@@ -38,10 +38,11 @@ public:
     SIMDTEXT_NODISCARD bool finalize() noexcept;
 
     /// Reset validator state for reuse.
-    void reset() noexcept { state_ = 0; }
+    void reset() noexcept { state_ = 0; saved_lead_ = 0; }
 
 private:
-    uint8_t state_;  // 0 = expecting new sequence, 1-3 = continuation bytes remaining
+    uint8_t state_;      // 0 = expecting new sequence, 1-3 = continuation bytes remaining
+    uint8_t saved_lead_; // Lead byte of current multi-byte sequence (for overlong/surrogate checks)
 };
 
 /// Count the number of Unicode code points in valid UTF-8.

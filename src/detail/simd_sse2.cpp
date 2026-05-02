@@ -380,8 +380,8 @@ size_t count_code_points(const char* data, size_t size) {
         uint32_t mask2 = _mm_movemask_epi8(m2);
         uint32_t mask3 = _mm_movemask_epi8(m3);
 
-        count += 64 - __builtin_popcount(mask0) - __builtin_popcount(mask1)
-                    - __builtin_popcount(mask2) - __builtin_popcount(mask3);
+        count += 64 - popcount16(mask0) - popcount16(mask1)
+                    - popcount16(mask2) - popcount16(mask3);
     }
 
     // Process 16 bytes at a time
@@ -389,7 +389,7 @@ size_t count_code_points(const char* data, size_t size) {
         __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i));
         __m128i m = _mm_and_si128(_mm_cmpgt_epi8(chunk, v80), _mm_cmplt_epi8(chunk, _mm_set1_epi8(static_cast<char>(0xC0))));
         uint32_t mask = _mm_movemask_epi8(m);
-        count += 16 - __builtin_popcount(mask);
+        count += 16 - popcount16(mask);
     }
 
     // Scalar tail

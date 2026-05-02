@@ -292,4 +292,70 @@ void test_utf8() {
         CHECK(!r.valid);
         CHECK_EQ(r.error_offset, 0u);
     }
+
+    // validate_utf8 — overlong 2-byte encoding (C0 80)
+    {
+        const char data[] = {(char)0xC0, (char)0x80};
+        CHECK(!simdtext::valid_utf8(std::string_view(data, 2)));
+    }
+
+    // validate_utf8 — overlong 2-byte encoding (C1 BF)
+    {
+        const char data[] = {(char)0xC1, (char)0xBF};
+        CHECK(!simdtext::valid_utf8(std::string_view(data, 2)));
+    }
+
+    // validate_utf8 — overlong 3-byte encoding (E0 80 80)
+    {
+        const char data[] = {(char)0xE0, (char)0x80, (char)0x80};
+        CHECK(!simdtext::valid_utf8(std::string_view(data, 3)));
+    }
+
+    // validate_utf8 — valid E0 A0 80 (U+0800)
+    {
+        const char data[] = {(char)0xE0, (char)0xA0, (char)0x80};
+        CHECK(simdtext::valid_utf8(std::string_view(data, 3)));
+    }
+
+    // validate_utf8 — surrogate ED A0 80 (U+D800)
+    {
+        const char data[] = {(char)0xED, (char)0xA0, (char)0x80};
+        CHECK(!simdtext::valid_utf8(std::string_view(data, 3)));
+    }
+
+    // validate_utf8 — valid ED 9F BF (U+D7FF, last before surrogates)
+    {
+        const char data[] = {(char)0xED, (char)0x9F, (char)0xBF};
+        CHECK(simdtext::valid_utf8(std::string_view(data, 3)));
+    }
+
+    // validate_utf8 — overlong 4-byte encoding (F0 80 80 80)
+    {
+        const char data[] = {(char)0xF0, (char)0x80, (char)0x80, (char)0x80};
+        CHECK(!simdtext::valid_utf8(std::string_view(data, 4)));
+    }
+
+    // validate_utf8 — valid F0 90 80 80 (U+10000)
+    {
+        const char data[] = {(char)0xF0, (char)0x90, (char)0x80, (char)0x80};
+        CHECK(simdtext::valid_utf8(std::string_view(data, 4)));
+    }
+
+    // validate_utf8 — F4 90 80 80 (> U+10FFFF, invalid)
+    {
+        const char data[] = {(char)0xF4, (char)0x90, (char)0x80, (char)0x80};
+        CHECK(!simdtext::valid_utf8(std::string_view(data, 4)));
+    }
+
+    // validate_utf8 — valid F4 8F BF BF (U+10FFFF, max Unicode)
+    {
+        const char data[] = {(char)0xF4, (char)0x8F, (char)0xBF, (char)0xBF};
+        CHECK(simdtext::valid_utf8(std::string_view(data, 4)));
+    }
+
+    // validate_utf8 — F5 80 80 80 (> U+10FFFF, invalid)
+    {
+        const char data[] = {(char)0xF5, (char)0x80, (char)0x80, (char)0x80};
+        CHECK(!simdtext::valid_utf8(std::string_view(data, 4)));
+    }
 }
