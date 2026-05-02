@@ -191,6 +191,19 @@ set_target_properties(simdtext_c PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRE
 if(SIMDTEXT_BUILD_EXAMPLES)
     add_executable(example_stats examples/stats.cpp)
     target_link_libraries(example_stats PRIVATE simdtext)
+
+    # Real-world examples
+    add_executable(example_log_parser examples/real_world/log_parser.cpp)
+    target_link_libraries(example_log_parser PRIVATE simdtext)
+
+    add_executable(example_csv_scanner examples/real_world/csv_scanner.cpp)
+    target_link_libraries(example_csv_scanner PRIVATE simdtext)
+
+    add_executable(example_url_handler examples/real_world/url_handler.cpp)
+    target_link_libraries(example_url_handler PRIVATE simdtext)
+
+    add_executable(example_utf8_validator examples/real_world/utf8_validator.cpp)
+    target_link_libraries(example_utf8_validator PRIVATE simdtext)
 endif()
 
 # ── Tests ───────────────────────────────────────────────────

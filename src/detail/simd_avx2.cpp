@@ -2,7 +2,44 @@
 #include <emmintrin.h>  // SSE2 (for tail)
 #include <cstddef>
 
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+
 namespace simdtext::detail::avx2 {
+
+namespace {
+inline int popcount32(unsigned int x) {
+#if defined(_MSC_VER)
+    return static_cast<int>(__popcnt(x));
+#elif defined(__GNUC__) || defined(__clang__)
+    return __builtin_popcount(x);
+#else
+    x = x - ((x >> 1) & 0x55555555u);
+    x = (x & 0x33333333u) + ((x >> 2) & 0x33333333u);
+    return static_cast<int>((((x + (x >> 4)) & 0x0F0F0F0Fu) * 0x01010101u) >> 24);
+#endif
+}
+
+inline int ctz32(unsigned int x) {
+#if defined(_MSC_VER)
+    unsigned long idx;
+    _BitScanForward(&idx, x);
+    return static_cast<int>(idx);
+#elif defined(__GNUC__) || defined(__clang__)
+    return __builtin_ctz(x);
+#else
+    if (x == 0) return 32;
+    int n = 0;
+    if ((x & 0x0000FFFFu) == 0) { n += 16; x >>= 16; }
+    if ((x & 0x000000FFu) == 0) { n += 8;  x >>= 8;  }
+    if ((x & 0x0000000Fu) == 0) { n += 4;  x >>= 4;  }
+    if ((x & 0x00000003u) == 0) { n += 2;  x >>= 2;  }
+    if ((x & 0x00000001u) == 0) { n += 1; }
+    return n;
+#endif
+}
+} // anonymous namespace
 
 size_t count_byte(const char* data, size_t size, char byte) {
     const __m256i vbyte = _mm256_set1_epi8(byte);
@@ -11,14 +48,14 @@ size_t count_byte(const char* data, size_t size, char byte) {
     for (; i + 32 <= size; i += 32) {
         __m256i chunk = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i));
         __m256i eq = _mm256_cmpeq_epi8(chunk, vbyte);
-        count += __builtin_popcount(_mm256_movemask_epi8(eq));
+        count += popcount32(static_cast<unsigned int>(_mm256_movemask_epi8(eq)));
     }
     // Tail: use SSE2 for remaining >= 16 bytes
     if (i + 16 <= size) {
         const __m128i vbyte16 = _mm_set1_epi8(byte);
         __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i));
         __m128i eq = _mm_cmpeq_epi8(chunk, vbyte16);
-        count += __builtin_popcount(_mm_movemask_epi8(eq));
+        count += popcount32(static_cast<unsigned int>(_mm_movemask_epi8(eq)));
         i += 16;
     }
     for (; i < size; ++i)
@@ -123,7 +160,7 @@ const char* find_byte(const char* data, size_t size, char byte) {
         __m256i eq = _mm256_cmpeq_epi8(chunk, vbyte);
         int mask = _mm256_movemask_epi8(eq);
         if (mask != 0) {
-            return data + i + __builtin_ctz(mask);
+            return data + i + ctz32(static_cast<unsigned int>(mask));
         }
     }
     // Tail with SSE2
@@ -133,7 +170,7 @@ const char* find_byte(const char* data, size_t size, char byte) {
         __m128i eq = _mm_cmpeq_epi8(chunk, vbyte16);
         int mask = _mm_movemask_epi8(eq);
         if (mask != 0) {
-            return data + i + __builtin_ctz(mask);
+            return data + i + ctz32(static_cast<unsigned int>(mask));
         }
         i += 16;
     }

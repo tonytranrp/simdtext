@@ -1,10 +1,16 @@
 #include "simdtext/simdtext.hpp"
 
-#ifdef __linux__
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
+#ifdef _WIN32
+  #ifndef WIN32_LEAN_AND_MEAN
+    #define WIN32_LEAN_AND_MEAN
+  #endif
+  #include <windows.h>
+  #include <io.h>
+#else
+  #include <sys/mman.h>
+  #include <sys/stat.h>
+  #include <fcntl.h>
+  #include <unistd.h>
 #endif
 
 #include <filesystem>
@@ -18,7 +24,17 @@ public:
     Impl() = default;
 
     ~Impl() {
-#ifdef __linux__
+#ifdef _WIN32
+        if (data_) {
+            UnmapViewOfFile(data_);
+        }
+        if (mapping_) {
+            CloseHandle(mapping_);
+        }
+        if (handle_ != INVALID_HANDLE_VALUE) {
+            CloseHandle(handle_);
+        }
+#else
         if (data_) {
             munmap(const_cast<char*>(data_), size_);
         }
@@ -29,7 +45,45 @@ public:
     }
 
     bool open(std::filesystem::path path) {
-#ifdef __linux__
+#ifdef _WIN32
+        handle_ = CreateFileW(
+            path.c_str(),
+            GENERIC_READ,
+            FILE_SHARE_READ,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        if (handle_ == INVALID_HANDLE_VALUE) [[unlikely]] return false;
+
+        LARGE_INTEGER file_size;
+        if (!GetFileSizeEx(handle_, &file_size)) [[unlikely]] return false;
+        size_ = static_cast<size_t>(file_size.QuadPart);
+
+        if (size_ == 0) {
+            data_ = nullptr;
+            return true;
+        }
+
+        mapping_ = CreateFileMappingW(
+            handle_,
+            nullptr,
+            PAGE_READONLY,
+            0,
+            0,
+            nullptr);
+        if (!mapping_) [[unlikely]] return false;
+
+        data_ = static_cast<const char*>(MapViewOfFile(
+            mapping_,
+            FILE_MAP_READ,
+            0,
+            0,
+            0));
+        if (!data_) [[unlikely]] return false;
+        return true;
+#else
+        // macOS and Linux both use POSIX mmap
         fd_ = ::open(path.c_str(), O_RDONLY);
         if (fd_ < 0) [[unlikely]] return false;
 
@@ -51,16 +105,6 @@ public:
 
         data_ = static_cast<const char*>(mapped);
         return true;
-#else
-        // Fallback: read file into memory
-        std::ifstream f(path, std::ios::binary | std::ios::ate);
-        if (!f) return false;
-        size_ = static_cast<size_t>(f.tellg());
-        f.seekg(0);
-        buffer_.resize(size_);
-        f.read(buffer_.data(), static_cast<std::streamsize>(size_));
-        data_ = buffer_.data();
-        return true;
 #endif
     }
 
@@ -73,8 +117,12 @@ public:
 private:
     const char* data_ = nullptr;
     size_t size_ = 0;
+#ifdef _WIN32
+    HANDLE handle_ = INVALID_HANDLE_VALUE;
+    HANDLE mapping_ = nullptr;
+#else
     int fd_ = -1;
-    std::string buffer_; // fallback for non-Linux
+#endif
 };
 
 MappedFile::MappedFile() : impl_(std::make_unique<Impl>()) {}

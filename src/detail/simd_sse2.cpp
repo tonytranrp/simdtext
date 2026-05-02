@@ -48,7 +48,7 @@ size_t count_byte(const char* data, size_t size, char byte) {
     for (; i + 16 <= size; i += 16) {
         __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i));
         __m128i eq = _mm_cmpeq_epi8(chunk, vbyte);
-        count += popcount32(static_cast<unsigned int>(_mm_movemask_epi8(eq))));
+        count += popcount32(static_cast<unsigned int>(_mm_movemask_epi8(eq)));
     }
     for (; i < size; ++i)
         if (data[i] == byte) ++count;
