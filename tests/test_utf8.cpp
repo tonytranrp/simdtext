@@ -202,4 +202,55 @@ void test_utf8() {
         const char data[] = {(char)0xF4, (char)0x8F, (char)0xBF, (char)0xBF};
         CHECK(valid_utf8({data, 4}));
     }
+
+    // Utf8Validator — streaming validation
+    {
+        Utf8Validator v;
+        CHECK(v.validate("hello"));
+        CHECK(v.validate(" world"));
+        CHECK(v.finalize());
+    }
+
+    // Utf8Validator — multi-byte across chunks
+    {
+        Utf8Validator v;
+        // '¥' = U+00A5 = C2 A5 in UTF-8
+        CHECK(v.validate("\xC2"));  // lead byte only
+        CHECK(!v.finalize());       // incomplete sequence
+        v.reset();
+        CHECK(v.validate("\xC2"));
+        CHECK(v.validate("\xA5"));  // continuation
+        CHECK(v.finalize());
+    }
+
+    // Utf8Validator — invalid continuation
+    {
+        Utf8Validator v;
+        CHECK(!v.validate("\x80"));  // bare continuation byte
+    }
+
+    // Utf8Validator — overlong
+    {
+        Utf8Validator v;
+        CHECK(!v.validate("\xC0\x80"));  // overlong NUL
+    }
+
+    // count_code_points
+    {
+        CHECK_EQ(count_code_points("hello"), 5u);
+        CHECK_EQ(count_code_points(""), 0u);
+        // '¥' is 1 code point, 2 bytes
+        CHECK_EQ(count_code_points("\xC2\xA5"), 1u);
+        // '🎉' is 1 code point, 4 bytes
+        CHECK_EQ(count_code_points("\xF0\x9F\x8E\x89"), 1u);
+        // Mixed: a + ¥(2 bytes) + b + 🎉(4 bytes) + c = 5 code points
+        const char mixed[] = {'a', (char)0xC2, (char)0xA5, 'b', (char)0xF0, (char)0x9F, (char)0x8E, (char)0x89, 'c'};
+        CHECK_EQ(count_code_points(std::string_view(mixed, 9)), 5u);
+    }
+
+    // utf8_length (alias)
+    {
+        CHECK_EQ(utf8_length("hello"), 5u);
+        CHECK_EQ(utf8_length("\xC2\xA5\xC2\xA5"), 2u);
+    }
 }
