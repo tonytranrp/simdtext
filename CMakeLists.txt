@@ -134,6 +134,7 @@ set(SIMDTEXT_SOURCES
     src/parallel/parallel.cpp
     src/hash/hash.cpp
     src/str/str.cpp
+    src/json/json.cpp
     ${SIMDTEXT_INTRINSIC_SOURCES}
 )
 
@@ -260,6 +261,7 @@ if(SIMDTEXT_BUILD_TESTS)
         tests/test_parallel.cpp
         tests/test_str.cpp
         tests/test_hash.cpp
+        tests/test_json.cpp
     )
     target_include_directories(test_simdtext PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_link_libraries(test_simdtext PRIVATE simdtext)

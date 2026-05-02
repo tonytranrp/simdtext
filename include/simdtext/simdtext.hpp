@@ -20,3 +20,4 @@
 #include "simdtext/pattern.hpp"
 #include "simdtext/hash.hpp"
 #include "simdtext/str.hpp"
+#include "simdtext/json.hpp"

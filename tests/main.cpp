@@ -11,6 +11,7 @@ void test_pattern();
 void test_parallel();
 void test_str();
 void test_hash();
+void test_json();
 
 int main() {
     test_scan();
@@ -24,6 +25,7 @@ int main() {
     test_parallel();
     test_str();
     test_hash();
+    test_json();
 
     std::printf("\n%d passed, %d failed\n", test::g_stats.passed, test::g_stats.failed);
     return test::g_stats.failed > 0 ? 1 : 0;
