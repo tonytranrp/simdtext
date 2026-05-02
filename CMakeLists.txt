@@ -131,6 +131,7 @@ set(SIMDTEXT_SOURCES
     src/url/url.cpp
     src/file/file.cpp
     src/pattern/pattern.cpp
+    src/parallel/parallel.cpp
     ${SIMDTEXT_INTRINSIC_SOURCES}
 )
 
@@ -249,6 +250,7 @@ if(SIMDTEXT_BUILD_TESTS)
         tests/test_utf8.cpp
         tests/test_file.cpp
         tests/test_pattern.cpp
+        tests/test_parallel.cpp
     )
     target_include_directories(test_simdtext PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_link_libraries(test_simdtext PRIVATE simdtext)

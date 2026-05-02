@@ -16,3 +16,4 @@
 #include <simdtext/url.hpp>
 #include <simdtext/file.hpp>
 #include <simdtext/utf8.hpp>
+#include "simdtext/parallel.hpp"

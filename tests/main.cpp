@@ -8,6 +8,7 @@ void test_url();
 void test_utf8();
 void test_file();
 void test_pattern();
+void test_parallel();
 
 int main() {
     test_scan();
@@ -18,6 +19,7 @@ int main() {
     test_utf8();
     test_file();
     test_pattern();
+    test_parallel();
 
     std::printf("\n%d passed, %d failed\n", test::g_stats.passed, test::g_stats.failed);
     return test::g_stats.failed > 0 ? 1 : 0;
