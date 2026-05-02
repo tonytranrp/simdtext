@@ -19,3 +19,4 @@
 #include "simdtext/parallel.hpp"
 #include "simdtext/pattern.hpp"
 #include "simdtext/hash.hpp"
+#include "simdtext/str.hpp"

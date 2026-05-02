@@ -133,6 +133,7 @@ set(SIMDTEXT_SOURCES
     src/pattern/pattern.cpp
     src/parallel/parallel.cpp
     src/hash/hash.cpp
+    src/str/str.cpp
     ${SIMDTEXT_INTRINSIC_SOURCES}
 )
 
@@ -152,6 +153,16 @@ if(SIMDTEXT_ARCH_X86)
         target_compile_options(simdtext_sse2 PRIVATE /arch:SSE2)
     endif()
     target_link_libraries(simdtext PRIVATE simdtext_sse2)
+
+    # ── Base64 SSSE3 intrinsics object ────────────────────────
+    add_library(simdtext_base64_ssse3 OBJECT src/encode/base64_simd.cpp)
+    target_include_directories(simdtext_base64_ssse3 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(simdtext_base64_ssse3 PRIVATE -msse2 -mssse3 -mno-avx)
+    elseif(MSVC)
+        target_compile_options(simdtext_base64_ssse3 PRIVATE /arch:SSE2)
+    endif()
+    target_link_libraries(simdtext PRIVATE simdtext_base64_ssse3)
 
     # ── AVX2 intrinsics object (compiled with -mavx2) ─────────
     include(CheckCXXCompilerFlag)
@@ -252,6 +263,7 @@ if(SIMDTEXT_BUILD_TESTS)
         tests/test_file.cpp
         tests/test_pattern.cpp
         tests/test_parallel.cpp
+        tests/test_str.cpp
     )
     target_include_directories(test_simdtext PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_link_libraries(test_simdtext PRIVATE simdtext)
@@ -318,7 +330,7 @@ install(TARGETS simdtext simdtext_c
 )
 
 if(SIMDTEXT_ARCH_X86)
-    install(TARGETS simdtext_sse2
+    install(TARGETS simdtext_sse2 simdtext_base64_ssse3
         EXPORT simdtext-targets
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     )
