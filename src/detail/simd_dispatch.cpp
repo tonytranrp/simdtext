@@ -124,6 +124,8 @@ bool validate_utf8_dispatch(const char* data, size_t size) {
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
     if (f.avx2)    return avx2::validate_utf8(data, size);
     if (f.sse2)    return sse2::validate_utf8(data, size);
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    if (f.neon)    return neon::validate_utf8(data, size);
 #endif
     return scalar::validate_utf8(data, size);
 }
@@ -133,6 +135,8 @@ size_t count_code_points_dispatch(const char* data, size_t size) {
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
     if (f.avx2)    return avx2::count_code_points(data, size);
     if (f.sse2)    return sse2::count_code_points(data, size);
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    if (f.neon)    return neon::count_code_points(data, size);
 #endif
     // Scalar fallback
     size_t count = 0;

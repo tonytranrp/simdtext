@@ -55,16 +55,13 @@ bool is_ascii(const char* data, size_t size) {
         uint8x16_t c2 = vld1q_u8(reinterpret_cast<const uint8_t*>(data + i + 32));
         uint8x16_t c3 = vld1q_u8(reinterpret_cast<const uint8_t*>(data + i + 48));
         uint8x16_t ored = vorrq_u8(vorrq_u8(c0, c1), vorrq_u8(c2, c3));
-        uint8x16_t high = vandq_u8(ored, vdupq_n_u8(0x80));
-        uint64x2_t reduced = vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(high)));
-        if (vgetq_lane_u64(reduced, 0) != 0 || vgetq_lane_u64(reduced, 1) != 0)
+        // Single instruction: vmaxvq_u8 does the horizontal max in one op
+        if (vmaxvq_u8(ored) > 0x7F)
             return false;
     }
     for (; i + 16 <= size; i += 16) {
         uint8x16_t chunk = vld1q_u8(reinterpret_cast<const uint8_t*>(data + i));
-        uint8x16_t high = vandq_u8(chunk, vdupq_n_u8(0x80));
-        uint64x2_t reduced = vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(high)));
-        if (vgetq_lane_u64(reduced, 0) != 0 || vgetq_lane_u64(reduced, 1) != 0)
+        if (vmaxvq_u8(chunk) > 0x7F)
             return false;
     }
     for (; i < size; ++i)
@@ -111,43 +108,173 @@ void uppercase_ascii(char* data, size_t size) {
     }
 }
 
+// ── NEON count_code_points ─────────────────────────────────────
+// Count code points = count bytes that are NOT continuation bytes (10xxxxxx)
+// Continuation bytes: (byte & 0xC0) == 0x80, i.e. 0x80–0xBF
+
+size_t count_code_points(const char* data, size_t size) {
+    const uint8x16_t vC0 = vdupq_n_u8(0xC0);
+    const uint8x16_t v80 = vdupq_n_u8(0x80);
+    size_t i = 0;
+    size_t count = 0;
+
+    // 4x unrolled
+    for (; i + 64 <= size; i += 64) {
+        uint8x16_t c0 = vld1q_u8(reinterpret_cast<const uint8_t*>(data + i));
+        uint8x16_t c1 = vld1q_u8(reinterpret_cast<const uint8_t*>(data + i + 16));
+        uint8x16_t c2 = vld1q_u8(reinterpret_cast<const uint8_t*>(data + i + 32));
+        uint8x16_t c3 = vld1q_u8(reinterpret_cast<const uint8_t*>(data + i + 48));
+        // Non-continuation: (byte & 0xC0) != 0x80
+        // Continuation: vandq + vceqq → 0xFF where (byte & 0xC0) == 0x80
+        uint8x16_t cont0 = vceqq_u8(vandq_u8(c0, vC0), v80);
+        uint8x16_t cont1 = vceqq_u8(vandq_u8(c1, vC0), v80);
+        uint8x16_t cont2 = vceqq_u8(vandq_u8(c2, vC0), v80);
+        uint8x16_t cont3 = vceqq_u8(vandq_u8(c3, vC0), v80);
+        // Non-continuation count = 16 - continuation count per chunk
+        // Count continuation bytes (0xFF → 1 after shift)
+        uint8x16_t ones0 = vshrq_n_u8(cont0, 7);
+        uint8x16_t ones1 = vshrq_n_u8(cont1, 7);
+        uint8x16_t ones2 = vshrq_n_u8(cont2, 7);
+        uint8x16_t ones3 = vshrq_n_u8(cont3, 7);
+        // Sum continuation bytes across all 4 vectors
+        uint16x8_t s8a = vpadalq_u8(vpadalq_u8(vdupq_n_u16(0), ones0), ones1);
+        uint16x8_t s8b = vpadalq_u8(vpadalq_u8(vdupq_n_u16(0), ones2), ones3);
+        uint32x4_t s16 = vpadalq_u16(vpadalq_u16(vdupq_n_u32(0), s8a), s8b);
+        uint64x2_t s32 = vpadalq_u32(vdupq_n_u64(0), s16);
+        size_t cont_count = vgetq_lane_u64(s32, 0) + vgetq_lane_u64(s32, 1);
+        count += 64 - cont_count;
+    }
+    for (; i + 16 <= size; i += 16) {
+        uint8x16_t chunk = vld1q_u8(reinterpret_cast<const uint8_t*>(data + i));
+        uint8x16_t cont = vceqq_u8(vandq_u8(chunk, vC0), v80);
+        uint8x16_t ones = vshrq_n_u8(cont, 7);
+        count += 16 - static_cast<size_t>(vaddvq_u8(ones));
+    }
+    for (; i < size; ++i)
+        if ((static_cast<unsigned char>(data[i]) & 0xC0) != 0x80) ++count;
+    return count;
+}
+
+// ── NEON validate_utf8 ─────────────────────────────────────────
+
+bool validate_utf8(const char* data, size_t size) {
+    const uint8x16_t vhigh = vdupq_n_u8(0x80);
+    int expected_cont = 0;
+    uint8_t prev_lead_byte = 0;
+    uint8_t prev_lead_class = 0;
+    uint8_t first_cont_byte = 0;
+
+    size_t i = 0;
+    for (; i + 16 <= size; i += 16) {
+        uint8x16_t chunk = vld1q_u8(reinterpret_cast<const uint8_t*>(data + i));
+        // Fast path: if all ASCII and not expecting continuation bytes, skip
+        if (vmaxvq_u8(chunk) <= 0x7F) {
+            if (expected_cont > 0) return false;
+            continue;
+        }
+        // Non-ASCII: process byte-by-byte within the chunk
+        const auto* p = reinterpret_cast<const uint8_t*>(data + i);
+        const auto* chunk_end = p + 16;
+        while (p < chunk_end) {
+            const auto byte = *p++;
+            if (byte <= 0x7F) {
+                if (expected_cont > 0) return false;
+            } else if ((byte & 0xE0) == 0xC0) {
+                if (expected_cont > 0) return false;
+                if (byte < 0xC2) return false;
+                expected_cont = 1;
+                prev_lead_class = 2;
+                prev_lead_byte = byte;
+            } else if ((byte & 0xF0) == 0xE0) {
+                if (expected_cont > 0) return false;
+                expected_cont = 2;
+                prev_lead_class = 3;
+                prev_lead_byte = byte;
+                first_cont_byte = 0;
+            } else if ((byte & 0xF8) == 0xF0) {
+                if (expected_cont > 0) return false;
+                if (byte > 0xF4) return false;
+                expected_cont = 3;
+                prev_lead_class = 4;
+                prev_lead_byte = byte;
+                first_cont_byte = 0;
+            } else if ((byte & 0xC0) == 0x80) {
+                if (expected_cont == 0) return false;
+                if (expected_cont == prev_lead_class - 1) {
+                    first_cont_byte = byte;
+                    if (prev_lead_byte == 0xE0 && byte < 0xA0) return false;
+                    if (prev_lead_byte == 0xED && byte > 0x9F) return false;
+                    if (prev_lead_byte == 0xF0 && byte < 0x90) return false;
+                    if (prev_lead_byte == 0xF4 && byte > 0x8F) return false;
+                }
+                --expected_cont;
+            } else {
+                return false;
+            }
+        }
+    }
+
+    // Scalar tail
+    const auto* p = reinterpret_cast<const uint8_t*>(data + i);
+    const auto* end = reinterpret_cast<const uint8_t*>(data + size);
+    while (p < end) {
+        const auto byte = *p++;
+        if (byte <= 0x7F) {
+            if (expected_cont > 0) return false;
+        } else if ((byte & 0xE0) == 0xC0) {
+            if (expected_cont > 0) return false;
+            if (byte < 0xC2) return false;
+            expected_cont = 1;
+            prev_lead_byte = byte;
+            prev_lead_class = 2;
+        } else if ((byte & 0xF0) == 0xE0) {
+            if (expected_cont > 0) return false;
+            expected_cont = 2;
+            prev_lead_class = 3;
+            prev_lead_byte = byte;
+            first_cont_byte = 0;
+        } else if ((byte & 0xF8) == 0xF0) {
+            if (expected_cont > 0) return false;
+            if (byte > 0xF4) return false;
+            expected_cont = 3;
+            prev_lead_class = 4;
+            prev_lead_byte = byte;
+            first_cont_byte = 0;
+        } else if ((byte & 0xC0) == 0x80) {
+            if (expected_cont == 0) return false;
+            if (expected_cont == prev_lead_class - 1) {
+                first_cont_byte = byte;
+                if (prev_lead_byte == 0xE0 && byte < 0xA0) return false;
+                if (prev_lead_byte == 0xED && byte > 0x9F) return false;
+                if (prev_lead_byte == 0xF0 && byte < 0x90) return false;
+                if (prev_lead_byte == 0xF4 && byte > 0x8F) return false;
+            }
+            --expected_cont;
+        } else {
+            return false;
+        }
+    }
+    return expected_cont == 0;
+}
+
 const char* find_byte(const char* data, size_t size, char byte) {
     const uint8x16_t vbyte = vdupq_n_u8(static_cast<uint8_t>(byte));
     size_t i = 0;
     for (; i + 16 <= size; i += 16) {
         uint8x16_t chunk = vld1q_u8(reinterpret_cast<const uint8_t*>(data + i));
         uint8x16_t eq = vceqq_u8(chunk, vbyte);
-        // Extract match bits into a 16-bit mask using NEON narrowing operations.
-        // Shift each match byte right by 7 to get 0/1, then pack into a bitmask.
-        uint8x16_t bits = vshrq_n_u8(eq, 7);
-        // Use shrn + sli to pack 16 bytes into a 64-bit value preserving positions.
-        // Method: extract each lane's bit and accumulate into a uint16_t mask.
-        uint16x8_t paired = vpaddlq_u8(bits);         // 8x uint16, each is sum of 2 adjacent bits
-        uint32x4_t paired2 = vpaddlq_u16(paired);     // 4x uint32, each is sum of 4 adjacent bits
-        uint64x2_t paired3 = vpaddlq_u32(paired2);    // 2x uint64, each is sum of 8 adjacent bits
-        // Reconstruct the 16-bit mask from the pairwise sums
-        // Lane 0 has bits 0-7, lane 1 has bits 8-15 (as counts 0-8)
-        // We need the original bit positions, so use a different approach:
-        // Use vshrn_n_u16 to narrow and extract.
-        // Actually, let's use a direct extraction with vgetq_lane:
-        uint16_t mask = 0;
-        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 0));
-        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 1)) << 1;
-        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 2)) << 2;
-        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 3)) << 3;
-        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 4)) << 4;
-        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 5)) << 5;
-        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 6)) << 6;
-        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 7)) << 7;
-        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 8)) << 8;
-        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 9)) << 9;
-        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 10)) << 10;
-        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 11)) << 11;
-        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 12)) << 12;
-        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 13)) << 13;
-        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 14)) << 14;
-        mask |= static_cast<uint16_t>(vgetq_lane_u8(bits, 15)) << 15;
-        if (mask != 0) {
+        // Fast check: vminvq_u8 returns 0xFF iff any lane matched
+        if (vminvq_u8(eq) == 0xFF) {
+            // Shift right by 7 to get 0/1 per lane, then extract as two uint64
+            uint8x16_t bits = vshrq_n_u8(eq, 7);
+            uint64_t lo = vgetq_lane_u64(vreinterpretq_u64_u8(bits), 0);
+            uint64_t hi = vgetq_lane_u64(vreinterpretq_u64_u8(bits), 1);
+            // Pack LSB of each byte into a 16-bit mask (scalar integer ops, not lane extracts)
+            uint16_t mask = 0;
+            uint64_t m = lo;
+            for (int b = 0; b < 8; ++b) { mask |= static_cast<uint16_t>((m & 1) << b); m >>= 8; }
+            m = hi;
+            for (int b = 0; b < 8; ++b) { mask |= static_cast<uint16_t>((m & 1) << (8 + b)); m >>= 8; }
             unsigned int bit_pos = static_cast<unsigned int>(__builtin_ctz(mask));
             return data + i + bit_pos;
         }
