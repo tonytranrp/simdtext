@@ -7,7 +7,6 @@
 /// NEON, Highway) with SWAR scalar fallback. Hot paths are zero-allocation.
 
 #include "export.hpp"
-#include <cstddef>
 #include <span>
 #include <string_view>
 
@@ -33,11 +32,10 @@ SIMDTEXT_NODISCARD SIMDTEXT_API size_t count_newlines(std::span<const char> inpu
 /// @note Uses SIMD-accelerated find_byte for single-char needles.
 SIMDTEXT_NODISCARD SIMDTEXT_API bool contains(std::string_view input, std::string_view needle);
 
-/// Find the first occurrence of a byte in [begin, end).
-/// @param begin Start of the range (inclusive).
-/// @param end End of the range (exclusive).
+/// Find the first occurrence of a byte in the input.
+/// @param input The byte buffer to search.
 /// @param byte The byte to find.
-/// @return Pointer to the first occurrence, or `end` if not found.
-SIMDTEXT_NODISCARD SIMDTEXT_API const char* find_byte(const char* begin, const char* end, char byte);
+/// @return Pointer to the first occurrence, or `input.data() + input.size()` if not found.
+SIMDTEXT_NODISCARD SIMDTEXT_API const char* find_byte(std::span<const char> input, char byte);
 
 } // namespace simdtext

@@ -31,10 +31,10 @@ std::string_view trim(std::string_view s) noexcept {
 
 std::string replace_all(std::string_view input, char needle, char replacement) {
     std::string result(input);
-    const char* end = find_byte(result.data(), result.data() + result.size(), needle);
+    const char* end = find_byte(std::span<const char>{result.data(), result.size()}, needle);
     // Use SIMD find_byte to skip to each occurrence
     for (size_t i = 0; i < result.size(); ) {
-        const char* found = find_byte(result.data() + i, result.data() + result.size(), needle);
+        const char* found = find_byte(std::span<const char>{result.data() + i, result.size() - i}, needle);
         if (found == result.data() + result.size()) break;
         const size_t pos = static_cast<size_t>(found - result.data());
         result[pos] = replacement;
@@ -57,7 +57,7 @@ std::string replace_all(std::string_view input, std::string_view needle, std::st
 
         // For single-char needles, use SIMD find_byte
         if (needle.size() == 1) {
-            const char* found = find_byte(search_start, search_end, needle[0]);
+            const char* found = find_byte(std::span<const char>{search_start, static_cast<size_t>(search_end - search_start)}, needle[0]);
             size_t match_pos = static_cast<size_t>(found - input.data());
             if (found == search_end) {
                 result.append(input.substr(pos));
@@ -111,7 +111,7 @@ std::vector<std::string_view> split_vec(std::string_view input, char delimiter) 
     std::vector<std::string_view> result;
     size_t pos = 0;
     while (pos <= input.size()) {
-        const char* found = find_byte(input.data() + pos, input.data() + input.size(), delimiter);
+        const char* found = find_byte(std::span<const char>{input.data() + pos, input.size() - pos}, delimiter);
         size_t end = static_cast<size_t>(found - input.data());
         if (found == input.data() + input.size()) {
             result.push_back(input.substr(pos));
@@ -128,7 +128,7 @@ size_t split_into(std::string_view input, char delimiter,
     size_t count = 0;
     size_t pos = 0;
     while (pos <= input.size() && count < capacity) {
-        const char* found = find_byte(input.data() + pos, input.data() + input.size(), delimiter);
+        const char* found = find_byte(std::span<const char>{input.data() + pos, input.size() - pos}, delimiter);
         size_t end = static_cast<size_t>(found - input.data());
         if (found == input.data() + input.size()) {
             if (count < capacity) out[count++] = input.substr(pos);
@@ -156,7 +156,7 @@ bool ends_with(std::string_view input, std::string_view suffix) noexcept {
 // ── Contains ────────────────────────────────────────────────
 
 bool contains_char(std::string_view input, char needle) noexcept {
-    return find_byte(input.data(), input.data() + input.size(), needle) != input.data() + input.size();
+    return find_byte(std::span<const char>{input.data(), input.size()}, needle) != input.data() + input.size();
 }
 
 } // namespace simdtext

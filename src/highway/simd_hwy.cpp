@@ -429,12 +429,12 @@ void uppercase_ascii_inplace(std::span<char> input) {
     uppercase_ascii_vec(d, ptr, input.size());
 }
 
-const char* find_byte(const char* begin, const char* end, char byte) {
-    const size_t size = static_cast<size_t>(end - begin);
-    if (size == 0) return end;
-    const auto* ptr = reinterpret_cast<const uint8_t*>(begin);
+const char* find_byte(std::span<const char> input, char byte) {
+    const size_t size = input.size();
+    if (size == 0) return input.data() + size;
+    const auto* ptr = reinterpret_cast<const uint8_t*>(input.data());
     const hn::ScalableTag<uint8_t> d;
-    return find_byte_vec(d, ptr, size, static_cast<uint8_t>(byte), begin);
+    return find_byte_vec(d, ptr, size, static_cast<uint8_t>(byte), input.data());
 }
 
 bool valid_utf8(std::span<const char> input) {

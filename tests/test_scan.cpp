@@ -135,30 +135,30 @@ void test_scan() {
     // find_byte - found
     {
         const char* data = "hello";
-        CHECK_EQ(find_byte(data, data + 5, 'e'), data + 1);
+        CHECK_EQ(find_byte(std::span<const char>{data, 5}, 'e'), data + 1);
     }
 
     // find_byte - not found returns end
     {
         const char* data = "hello";
-        CHECK_EQ(find_byte(data, data + 5, 'z'), data + 5);
+        CHECK_EQ(find_byte(std::span<const char>{data, 5}, 'z'), data + 5);
     }
 
     // find_byte - first byte
     {
         const char* data = "abc";
-        CHECK_EQ(find_byte(data, data + 3, 'a'), data);
+        CHECK_EQ(find_byte(std::span<const char>{data, 3}, 'a'), data);
     }
 
     // find_byte - last byte
     {
         const char* data = "abc";
-        CHECK_EQ(find_byte(data, data + 3, 'c'), data + 2);
+        CHECK_EQ(find_byte(std::span<const char>{data, 3}, 'c'), data + 2);
     }
 
     // find_byte - empty range
     {
         const char* data = "x";
-        CHECK_EQ(find_byte(data, data, 'x'), data);
+        CHECK_EQ(find_byte(std::span<const char>{data, 0}, 'x'), data);
     }
 }

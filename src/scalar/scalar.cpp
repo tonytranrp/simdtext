@@ -71,13 +71,12 @@ void uppercase_ascii_inplace(std::span<char> input) {
     detail::scalar::uppercase_ascii(input.data(), input.size());
 }
 
-const char* find_byte(const char* begin, const char* end, char byte) {
-    const size_t size = static_cast<size_t>(end - begin);
-    if (size == 0) return end;
+const char* find_byte(std::span<const char> input, char byte) {
+    if (input.empty()) return input.data() + input.size();
     const auto& f = detail::detect_cpu();
-    if (f.avx2)    return detail::avx2::find_byte(begin, size, byte);
-    if (f.sse2)    return detail::sse2::find_byte(begin, size, byte);
-    return detail::scalar::find_byte(begin, size, byte);
+    if (f.avx2)    return detail::avx2::find_byte(input.data(), input.size(), byte);
+    if (f.sse2)    return detail::sse2::find_byte(input.data(), input.size(), byte);
+    return detail::scalar::find_byte(input.data(), input.size(), byte);
 }
 
 #endif // SIMDTEXT_HAVE_HWY

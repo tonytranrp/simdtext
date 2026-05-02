@@ -83,7 +83,7 @@ size_t parallel_count_newlines(std::string_view data, const ParallelOptions& opt
 const char* parallel_find_byte(std::string_view data, char byte, const ParallelOptions& opts) {
     const size_t size = data.size();
     const unsigned int nthreads = effective_threads(opts, size);
-    if (nthreads == 1) return find_byte(data.data(), data.data() + size, byte);
+    if (nthreads == 1) return find_byte(std::span<const char>{data.data(), size}, byte);
 
     const size_t chunk = size / nthreads;
     std::atomic<const char*> earliest{nullptr};
@@ -94,7 +94,7 @@ const char* parallel_find_byte(std::string_view data, char byte, const ParallelO
         const size_t start = t * chunk;
         const size_t end = (t == nthreads - 1) ? size : (t + 1) * chunk;
         threads.emplace_back([&earliest, &data, byte, start, end]() {
-            const char* result = find_byte(data.data() + start, data.data() + end, byte);
+            const char* result = find_byte(std::span<const char>{data.data() + start, end - start}, byte);
             if (result != data.data() + end) {
                 const char* current = earliest.load(std::memory_order_acquire);
                 while (current == nullptr || result < current) {
