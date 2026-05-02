@@ -144,4 +144,31 @@ const char* find_byte(const char* SIMDTEXT_RESTRICT data, size_t size, char byte
     return data + size;
 }
 
+__attribute__((optimize("no-tree-vectorize")))
+bool validate_utf8(const char* SIMDTEXT_RESTRICT data, size_t size) noexcept {
+    const auto* p = reinterpret_cast<const uint8_t*>(data);
+    const auto* end = p + size;
+    while (p < end) {
+        const auto byte = *p++;
+        if (byte <= 0x7F) continue;
+        else if ((byte & 0xE0) == 0xC0) {
+            if (p >= end || (*p & 0xC0) != 0x80) return false;
+            if (byte < 0xC2) return false;
+            ++p;
+        } else if ((byte & 0xF0) == 0xE0) {
+            if (p + 1 >= end || (*p & 0xC0) != 0x80 || (*(p+1) & 0xC0) != 0x80) return false;
+            if (byte == 0xE0 && *p < 0xA0) return false;
+            if (byte == 0xED && *p > 0x9F) return false;
+            p += 2;
+        } else if ((byte & 0xF8) == 0xF0) {
+            if (p + 2 >= end || (*p & 0xC0) != 0x80 || (*(p+1) & 0xC0) != 0x80 || (*(p+2) & 0xC0) != 0x80) return false;
+            if (byte == 0xF0 && *p < 0x90) return false;
+            if (byte > 0xF4) return false;
+            if (byte == 0xF4 && *p > 0x8F) return false;
+            p += 3;
+        } else return false;
+    }
+    return true;
+}
+
 } // namespace simdtext::detail::scalar

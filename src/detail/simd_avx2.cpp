@@ -1,6 +1,7 @@
 #include <immintrin.h>  // AVX2
 #include <emmintrin.h>  // SSE2 (for tail)
 #include <cstddef>
+#include <cstdint>
 
 // AVX2 implementation — must NOT use AVX-512 to avoid frequency downclocking.
 // CMakeLists.txt adds -mno-avx512f to this object's compile flags.
@@ -161,28 +162,23 @@ bool is_ascii(const char* data, size_t size) {
 }
 
 void lowercase_ascii(char* data, size_t size) {
-    // XOR case flip: bit 5 is the case bit
-    const __m256i vupper = _mm256_set1_epi8('a' - 1);    // > 'A'-1 means >= 'A'
-    const __m256i vupper_end = _mm256_set1_epi8('z' + 1); // < 'Z'+1 means <= 'Z' ... wait
-    // Actually for lowercase: we want is_upper = (c >= 'A') & (c <= 'Z')
-    // But AVX2 has only signed cmpgt. Use: not_above = cmpgt(vupper_end, c) means c < 'Z'+1 ↔ c <= 'Z'
-    //  not_below = cmpgt(c, vupper) means c > 'A'-1 ↔ c >= 'A'
-    // Wait, AVX2 doesn't have cmplt. We use: _mm256_cmpgt_epi8(a, b) → a > b (signed)
-    // cmplt(chunk, vupper_end) → chunk < vupper_end → use cmpgt(vupper_end, chunk)
     const __m256i vA = _mm256_set1_epi8('A' - 1);
     const __m256i vZ1 = _mm256_set1_epi8('Z' + 1);
     const __m256i vbit5 = _mm256_set1_epi8(0x20);
+    // Non-temporal store threshold: ~2MB (half of typical L3)
+    const size_t nontemporal_threshold = 2 * 1024 * 1024;
+    const bool use_nontemporal = size > nontemporal_threshold;
     size_t i = 0;
     for (; i + 32 <= size; i += 32) {
         __m256i chunk = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i));
-        // is_upper: chunk >= 'A' AND chunk <= 'Z'
-        // chunk >= 'A' ↔ chunk > 'A'-1 ↔ cmpgt(chunk, vA)
-        // chunk <= 'Z' ↔ NOT (chunk > 'Z') ↔ NOT cmpgt(chunk, vZ) ↔ cmpgt(vZ1, chunk)
         __m256i ge_A = _mm256_cmpgt_epi8(chunk, vA);
         __m256i le_Z = _mm256_cmpgt_epi8(vZ1, chunk);
         __m256i is_upper = _mm256_and_si256(ge_A, le_Z);
         __m256i lowered = _mm256_xor_si256(chunk, _mm256_and_si256(is_upper, vbit5));
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(data + i), lowered);
+        if (use_nontemporal)
+            _mm256_stream_si256(reinterpret_cast<__m256i*>(data + i), lowered);
+        else
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(data + i), lowered);
     }
     // Tail with SSE2
     if (i + 16 <= size) {
@@ -207,6 +203,9 @@ void uppercase_ascii(char* data, size_t size) {
     const __m256i va = _mm256_set1_epi8('a' - 1);
     const __m256i vz1 = _mm256_set1_epi8('z' + 1);
     const __m256i vbit5 = _mm256_set1_epi8(0x20);
+    // Non-temporal store threshold: ~2MB (half of typical L3)
+    const size_t nontemporal_threshold = 2 * 1024 * 1024;
+    const bool use_nontemporal = size > nontemporal_threshold;
     size_t i = 0;
     for (; i + 32 <= size; i += 32) {
         __m256i chunk = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i));
@@ -214,7 +213,10 @@ void uppercase_ascii(char* data, size_t size) {
         __m256i le_z = _mm256_cmpgt_epi8(vz1, chunk);
         __m256i is_lower = _mm256_and_si256(ge_a, le_z);
         __m256i uppered = _mm256_xor_si256(chunk, _mm256_and_si256(is_lower, vbit5));
-        _mm256_storeu_si256(reinterpret_cast<__m256i*>(data + i), uppered);
+        if (use_nontemporal)
+            _mm256_stream_si256(reinterpret_cast<__m256i*>(data + i), uppered);
+        else
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(data + i), uppered);
     }
     // Tail with SSE2
     if (i + 16 <= size) {
@@ -267,6 +269,131 @@ const char* find_byte(const char* data, size_t size, char byte) {
     for (; i < size; ++i)
         if (data[i] == byte) return data + i;
     return data + size;
+}
+
+// ── UTF-8 Validation (AVX2) ───────────────────────────────
+
+bool validate_utf8(const char* data, size_t size) {
+    const auto* p = reinterpret_cast<const uint8_t*>(data);
+    const auto* end = p + size;
+    int expected_cont = 0;
+    uint8_t prev_lead_byte = 0;
+    uint8_t prev_lead_class = 0;
+
+    // AVX2 fast path: skip all-ASCII chunks
+    const __m256i vhigh = _mm256_set1_epi8(static_cast<char>(0x80));
+    size_t i = 0;
+    for (; i + 32 <= size; i += 32) {
+        __m256i chunk = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i));
+        if (_mm256_movemask_epi8(_mm256_and_si256(chunk, vhigh)) == 0) {
+            // All ASCII — but only valid if we're not expecting continuation bytes
+            if (expected_cont > 0) return false;
+            continue;
+        }
+        // Non-ASCII: process byte-by-byte within the chunk
+        const auto* cp = reinterpret_cast<const uint8_t*>(data + i);
+        const auto* chunk_end = cp + 32;
+        while (cp < chunk_end) {
+            const auto byte = *cp++;
+            if (byte <= 0x7F) {
+                if (expected_cont > 0) return false;
+                continue;
+            } else if ((byte & 0xE0) == 0xC0) {
+                if (expected_cont > 0) return false;
+                if (byte < 0xC2) return false;
+                expected_cont = 1;
+                prev_lead_class = 2;
+                prev_lead_byte = byte;
+            } else if ((byte & 0xF0) == 0xE0) {
+                if (expected_cont > 0) return false;
+                expected_cont = 2;
+                prev_lead_class = 3;
+                prev_lead_byte = byte;
+            } else if ((byte & 0xF8) == 0xF0) {
+                if (expected_cont > 0) return false;
+                if (byte > 0xF4) return false;
+                expected_cont = 3;
+                prev_lead_class = 4;
+                prev_lead_byte = byte;
+            } else if ((byte & 0xC0) == 0x80) {
+                if (expected_cont == 0) return false;
+                // Range checks for first continuation byte after lead
+                if (expected_cont == prev_lead_class - 1) {
+                    if (prev_lead_byte == 0xE0 && byte < 0xA0) return false;
+                    if (prev_lead_byte == 0xED && byte > 0x9F) return false;
+                    if (prev_lead_byte == 0xF0 && byte < 0x90) return false;
+                    if (prev_lead_byte == 0xF4 && byte > 0x8F) return false;
+                }
+                --expected_cont;
+            } else {
+                return false;
+            }
+        }
+    }
+    // SSE2 tail for remaining 16-31 bytes
+    if (i + 16 <= size) {
+        __m128i chunk16 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i));
+        if (_mm_movemask_epi8(_mm_and_si128(chunk16, _mm_set1_epi8(static_cast<char>(0x80)))) != 0 || expected_cont > 0) {
+            const auto* cp = reinterpret_cast<const uint8_t*>(data + i);
+            const auto* chunk_end = cp + 16;
+            while (cp < chunk_end) {
+                const auto byte = *cp++;
+                if (byte <= 0x7F) {
+                    if (expected_cont > 0) return false;
+                } else if ((byte & 0xE0) == 0xC0) {
+                    if (expected_cont > 0) return false;
+                    if (byte < 0xC2) return false;
+                    expected_cont = 1; prev_lead_class = 2; prev_lead_byte = byte;
+                } else if ((byte & 0xF0) == 0xE0) {
+                    if (expected_cont > 0) return false;
+                    expected_cont = 2; prev_lead_class = 3; prev_lead_byte = byte;
+                } else if ((byte & 0xF8) == 0xF0) {
+                    if (expected_cont > 0) return false;
+                    if (byte > 0xF4) return false;
+                    expected_cont = 3; prev_lead_class = 4; prev_lead_byte = byte;
+                } else if ((byte & 0xC0) == 0x80) {
+                    if (expected_cont == 0) return false;
+                    if (expected_cont == prev_lead_class - 1) {
+                        if (prev_lead_byte == 0xE0 && byte < 0xA0) return false;
+                        if (prev_lead_byte == 0xED && byte > 0x9F) return false;
+                        if (prev_lead_byte == 0xF0 && byte < 0x90) return false;
+                        if (prev_lead_byte == 0xF4 && byte > 0x8F) return false;
+                    }
+                    --expected_cont;
+                } else return false;
+            }
+        }
+        i += 16;
+    }
+    // Scalar tail
+    const auto* cp = reinterpret_cast<const uint8_t*>(data + i);
+    while (cp < end) {
+        const auto byte = *cp++;
+        if (byte <= 0x7F) {
+            if (expected_cont > 0) return false;
+        } else if ((byte & 0xE0) == 0xC0) {
+            if (expected_cont > 0) return false;
+            if (byte < 0xC2) return false;
+            expected_cont = 1; prev_lead_class = 2; prev_lead_byte = byte;
+        } else if ((byte & 0xF0) == 0xE0) {
+            if (expected_cont > 0) return false;
+            expected_cont = 2; prev_lead_class = 3; prev_lead_byte = byte;
+        } else if ((byte & 0xF8) == 0xF0) {
+            if (expected_cont > 0) return false;
+            if (byte > 0xF4) return false;
+            expected_cont = 3; prev_lead_class = 4; prev_lead_byte = byte;
+        } else if ((byte & 0xC0) == 0x80) {
+            if (expected_cont == 0) return false;
+            if (expected_cont == prev_lead_class - 1) {
+                if (prev_lead_byte == 0xE0 && byte < 0xA0) return false;
+                if (prev_lead_byte == 0xED && byte > 0x9F) return false;
+                if (prev_lead_byte == 0xF0 && byte < 0x90) return false;
+                if (prev_lead_byte == 0xF4 && byte > 0x8F) return false;
+            }
+            --expected_cont;
+        } else return false;
+    }
+    return expected_cont == 0;
 }
 
 } // namespace simdtext::detail::avx2

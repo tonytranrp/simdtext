@@ -185,34 +185,8 @@ SplitView split(std::string_view input, char delimiter) {
 // ── UTF-8 ──────────────────────────────────────────────────
 
 bool valid_utf8(std::span<const char> input) {
-    const auto* p = reinterpret_cast<const uint8_t*>(input.data());
-    const auto* end = p + input.size();
-
-    while (p < end) {
-        const auto byte = *p++;
-
-        if (byte <= 0x7F) {
-            continue;
-        } else if ((byte & 0xE0) == 0xC0) {
-            if (p >= end || (*p & 0xC0) != 0x80) return false;
-            if (byte < 0xC2) return false;
-            ++p;
-        } else if ((byte & 0xF0) == 0xE0) {
-            if (p + 1 >= end || (*p & 0xC0) != 0x80 || (*(p+1) & 0xC0) != 0x80) return false;
-            if (byte == 0xE0 && *p < 0xA0) return false;
-            if (byte == 0xED && *p > 0x9F) return false;
-            p += 2;
-        } else if ((byte & 0xF8) == 0xF0) {
-            if (p + 2 >= end || (*p & 0xC0) != 0x80 || (*(p+1) & 0xC0) != 0x80 || (*(p+2) & 0xC0) != 0x80) return false;
-            if (byte == 0xF0 && *p < 0x90) return false;
-            if (byte > 0xF4) return false;
-            if (byte == 0xF4 && *p > 0x8F) return false;  // > U+10FFFF
-            p += 3;
-        } else {
-            return false;
-        }
-    }
-    return true;
+    if (input.empty()) return true;
+    return detail::validate_utf8_dispatch(input.data(), input.size());
 }
 
 } // namespace simdtext

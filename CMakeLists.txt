@@ -132,6 +132,7 @@ set(SIMDTEXT_SOURCES
     src/file/file.cpp
     src/pattern/pattern.cpp
     src/parallel/parallel.cpp
+    src/hash/hash.cpp
     ${SIMDTEXT_INTRINSIC_SOURCES}
 )
 

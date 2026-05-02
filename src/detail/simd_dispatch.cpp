@@ -10,6 +10,7 @@ bool is_ascii(const char* data, size_t size);
 void lowercase_ascii(char* data, size_t size);
 void uppercase_ascii(char* data, size_t size);
 const char* find_byte(const char* data, size_t size, char byte);
+bool validate_utf8(const char* data, size_t size);
 }
 
 // Forward declarations — x86 SSE2/AVX2 (only linked on x86)
@@ -20,6 +21,7 @@ bool is_ascii(const char* data, size_t size);
 void lowercase_ascii(char* data, size_t size);
 void uppercase_ascii(char* data, size_t size);
 const char* find_byte(const char* data, size_t size, char byte);
+bool validate_utf8(const char* data, size_t size);
 }
 
 namespace avx2 {
@@ -28,6 +30,7 @@ bool is_ascii(const char* data, size_t size);
 void lowercase_ascii(char* data, size_t size);
 void uppercase_ascii(char* data, size_t size);
 const char* find_byte(const char* data, size_t size, char byte);
+bool validate_utf8(const char* data, size_t size);
 }
 
 #if defined(__AVX512BW__)
@@ -122,6 +125,19 @@ const char* find_byte_dispatch(const char* data, size_t size, char byte) {
     if (f.neon)    return neon::find_byte(data, size, byte);
 #endif
     return scalar::find_byte(data, size, byte);
+}
+
+// ── UTF-8 validation dispatch ──────────────────────────────
+
+bool validate_utf8_dispatch(const char* data, size_t size) {
+    const auto& f = detect_cpu();
+#if defined(SIMDTEXT_ARCH_X86) && defined(__AVX2__)
+    if (f.avx2)    return avx2::validate_utf8(data, size);
+#endif
+#if defined(SIMDTEXT_ARCH_X86)
+    if (f.sse2)    return sse2::validate_utf8(data, size);
+#endif
+    return scalar::validate_utf8(data, size);
 }
 
 } // namespace simdtext::detail
