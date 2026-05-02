@@ -21,3 +21,4 @@
 #include "simdtext/hash.hpp"
 #include "simdtext/str.hpp"
 #include "simdtext/json.hpp"
+#include "simdtext/csv.hpp"
