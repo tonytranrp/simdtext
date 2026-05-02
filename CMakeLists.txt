@@ -137,6 +137,7 @@ set(SIMDTEXT_SOURCES
     src/json/json.cpp
     src/csv/csv.cpp
     src/diff/diff.cpp
+    src/log/log.cpp
     ${SIMDTEXT_INTRINSIC_SOURCES}
 )
 
@@ -266,6 +267,7 @@ if(SIMDTEXT_BUILD_TESTS)
         tests/test_json.cpp
         tests/test_csv.cpp
         tests/test_diff.cpp
+        tests/test_log.cpp
     )
     target_include_directories(test_simdtext PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     target_link_libraries(test_simdtext PRIVATE simdtext)

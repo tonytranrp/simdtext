@@ -23,3 +23,4 @@
 #include "simdtext/json.hpp"
 #include "simdtext/csv.hpp"
 #include "simdtext/diff.hpp"
+#include "simdtext/log.hpp"
