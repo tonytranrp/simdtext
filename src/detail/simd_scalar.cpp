@@ -3,6 +3,10 @@
 #include <cstring>
 #include "simdtext/export.hpp"
 
+// Scalar fallback — must NOT use AVX-512 or auto-vectorize to SIMD.
+// CMakeLists.txt adds -mno-avx512f to this object's compile flags.
+// Use __attribute__((optimize)) as a belt-and-suspenders guard.
+
 namespace simdtext::detail::scalar {
 
 // SWAR (SIMD Within A Register) helpers for 64-bit scalar processing
@@ -32,8 +36,6 @@ inline bool swar_is_ascii(uint64_t v) {
 }
 
 // SWAR range mask: set 0x80 in each byte position where byte is in [lo, hi]
-// Uses: (v - lo_all) & ~(v | lo_all) doesn't work simply for unsigned.
-// Instead: for each byte b, (b - lo) <= range iff (b - lo + (255-range)) has high bit set
 inline uint64_t swar_range_mask(uint64_t v, uint8_t lo, uint8_t hi) {
     const uint64_t lo_rep = lo * 0x0101010101010101ULL;
     const uint64_t range = static_cast<uint64_t>(hi - lo);
@@ -44,11 +46,22 @@ inline uint64_t swar_range_mask(uint64_t v, uint8_t lo, uint8_t hi) {
 }
 } // anonymous namespace
 
+__attribute__((optimize("no-tree-vectorize")))
 size_t count_byte(const char* SIMDTEXT_RESTRICT data, size_t size, char byte) noexcept {
     size_t count = 0;
     size_t i = 0;
-    // SWAR: process 8 bytes at a time
+    // SWAR: process 8 bytes at a time, 4x unrolled for better ILP
     const uint64_t vb = static_cast<uint8_t>(byte) * 0x0101010101010101ULL;
+    for (; i + 32 <= size; i += 32) {
+        uint64_t v0 = load_u64(data + i);
+        uint64_t v1 = load_u64(data + i + 8);
+        uint64_t v2 = load_u64(data + i + 16);
+        uint64_t v3 = load_u64(data + i + 24);
+        count += swar_count_byte(v0, vb);
+        count += swar_count_byte(v1, vb);
+        count += swar_count_byte(v2, vb);
+        count += swar_count_byte(v3, vb);
+    }
     for (; i + 8 <= size; i += 8) {
         uint64_t v = load_u64(data + i);
         count += swar_count_byte(v, vb);
@@ -58,9 +71,18 @@ size_t count_byte(const char* SIMDTEXT_RESTRICT data, size_t size, char byte) no
     return count;
 }
 
+__attribute__((optimize("no-tree-vectorize")))
 bool is_ascii(const char* SIMDTEXT_RESTRICT data, size_t size) noexcept {
     size_t i = 0;
-    // SWAR: check 8 bytes at once
+    // SWAR: check 8 bytes at once, 4x unrolled to reduce branches
+    const uint64_t high_mask = 0x8080808080808080ULL;
+    for (; i + 32 <= size; i += 32) {
+        uint64_t v0 = load_u64(data + i);
+        uint64_t v1 = load_u64(data + i + 8);
+        uint64_t v2 = load_u64(data + i + 16);
+        uint64_t v3 = load_u64(data + i + 24);
+        if ((v0 | v1 | v2 | v3) & high_mask) return false;
+    }
     for (; i + 8 <= size; i += 8) {
         uint64_t v = load_u64(data + i);
         if (!swar_is_ascii(v)) return false;
@@ -70,6 +92,7 @@ bool is_ascii(const char* SIMDTEXT_RESTRICT data, size_t size) noexcept {
     return true;
 }
 
+__attribute__((optimize("no-tree-vectorize")))
 void lowercase_ascii(char* SIMDTEXT_RESTRICT data, size_t size) noexcept {
     size_t i = 0;
     // SWAR: process 8 bytes with XOR case flip
@@ -87,6 +110,7 @@ void lowercase_ascii(char* SIMDTEXT_RESTRICT data, size_t size) noexcept {
     }
 }
 
+__attribute__((optimize("no-tree-vectorize")))
 void uppercase_ascii(char* SIMDTEXT_RESTRICT data, size_t size) noexcept {
     size_t i = 0;
     for (; i + 8 <= size; i += 8) {
@@ -102,12 +126,10 @@ void uppercase_ascii(char* SIMDTEXT_RESTRICT data, size_t size) noexcept {
     }
 }
 
+__attribute__((optimize("no-tree-vectorize")))
 const char* find_byte(const char* SIMDTEXT_RESTRICT data, size_t size, char byte) noexcept {
     size_t i = 0;
-    uint64_t vb = static_cast<uint8_t>(byte);
-    vb |= vb << 8;
-    vb |= vb << 16;
-    vb |= vb << 32;
+    const uint64_t vb = static_cast<uint8_t>(byte) * 0x0101010101010101ULL;
     for (; i + 8 <= size; i += 8) {
         uint64_t v = load_u64(data + i);
         uint64_t xored = v ^ vb;

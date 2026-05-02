@@ -117,4 +117,56 @@ void test_url() {
         auto params = parse_query("url=http%3A%2F%2Fexample.com");
         CHECK_EQ(params["url"], "http://example.com");
     }
+
+    // ── Edge cases for fuzz hardening ──────────────────────
+
+    // URL decode: bare % at end
+    {
+        CHECK_EQ(url_decode("hello%"), "hello%");
+    }
+
+    // URL decode: % followed by non-hex chars
+    {
+        CHECK_EQ(url_decode("%GG"), "%GG");
+    }
+
+    // URL decode: %00 null byte
+    {
+        auto result = url_decode("%00");
+        CHECK_EQ(result.size(), 1u);
+        CHECK_EQ(result[0], '\0');
+    }
+
+    // URL decode: % at very end with one char
+    {
+        CHECK_EQ(url_decode("%A"), "%A");
+    }
+
+    // URL encode: all 0xFF bytes
+    {
+        std::string s(3, (char)0xFF);
+        auto result = url_encode(s);
+        CHECK_EQ(result, "%FF%FF%FF");
+    }
+
+    // URL encode/decode roundtrip with binary
+    {
+        std::string s;
+        for (int i = 0; i < 256; i++) s += char(i);
+        auto encoded = url_encode(s);
+        auto decoded = url_decode(encoded);
+        CHECK_EQ(decoded, s);
+    }
+
+    // parse_query: bare % in value
+    {
+        auto params = parse_query("key=hello%");
+        CHECK_EQ(params["key"], "hello%");
+    }
+
+    // parse_query: with ?
+    {
+        auto params = parse_query("?name=test");
+        CHECK_EQ(params["name"], "test");
+    }
 }

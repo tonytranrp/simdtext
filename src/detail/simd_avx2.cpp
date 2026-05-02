@@ -2,8 +2,19 @@
 #include <emmintrin.h>  // SSE2 (for tail)
 #include <cstddef>
 
+// AVX2 implementation — must NOT use AVX-512 to avoid frequency downclocking.
+// CMakeLists.txt adds -mno-avx512f to this object's compile flags.
+
 #if defined(_MSC_VER)
 #include <intrin.h>
+#endif
+
+// Prevent AVX-512 codegen in AVX2 functions — avoids frequency downclocking
+// and ensures AVX2 path doesn't depend on AVX-512 availability.
+// We explicitly target avx2+sse4.2+popcnt and exclude avx512 features.
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC push_options
+#pragma GCC target("avx2,bmi,popcnt,lzcnt,no-avx512f,no-avx512bw,no-avx512vl,no-avx512dq,no-avx512cd,no-avx512er,no-avx512pf,no-avx512vbmi,no-avx512ifma,no-avx512vpopcntdq")
 #endif
 
 namespace simdtext::detail::avx2 {
@@ -259,3 +270,7 @@ const char* find_byte(const char* data, size_t size, char byte) {
 }
 
 } // namespace simdtext::detail::avx2
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC pop_options
+#endif

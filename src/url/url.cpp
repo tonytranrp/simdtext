@@ -32,10 +32,10 @@ static constexpr std::array<int8_t, 256> hex_decode_table = {
     -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
     -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
      0, 1, 2, 3, 4, 5, 6, 7, 8, 9,-1,-1,-1,-1,-1,-1,
-    -1,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,
-    25,26,27,28,29,30,31,32,33,34,35,-1,-1,-1,-1,-1,
-    -1,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,
-    25,26,27,28,29,30,31,32,33,34,35,-1,-1,-1,-1,-1,
+    -1,10,11,12,13,14,15,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,10,11,12,13,14,15,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
     -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
     -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
     -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
@@ -98,7 +98,7 @@ size_t url_decode_to(std::string_view input, std::span<char> output) noexcept {
         if (src[i] == '%' && i + 2 < input.size()) {
             const int8_t hi = hex_decode_table[src[i + 1]];
             const int8_t lo = hex_decode_table[src[i + 2]];
-            if (hi >= 0 && lo >= 0) {
+            if (hi >= 0 && lo >= 0 && hi <= 15 && lo <= 15) {
                 if (j >= out_size) return 0;
                 dst[j++] = static_cast<char>((static_cast<uint8_t>(hi) << 4) | static_cast<uint8_t>(lo));
                 i += 2;
@@ -123,7 +123,7 @@ std::string url_decode(std::string_view input) {
         if (src[i] == '%' && i + 2 < input.size()) {
             const int8_t hi = hex_decode_table[src[i + 1]];
             const int8_t lo = hex_decode_table[src[i + 2]];
-            if (hi >= 0 && lo >= 0) {
+            if (hi >= 0 && lo >= 0 && hi <= 15 && lo <= 15) {
                 result += static_cast<char>((static_cast<uint8_t>(hi) << 4) | static_cast<uint8_t>(lo));
                 i += 2;
                 continue;
@@ -164,7 +164,8 @@ std::unordered_map<std::string, std::string> parse_query(std::string_view query)
 
 // Internal helper used by encode.cpp and url.cpp
 int hex_val(char c) noexcept {
-    return hex_decode_table[static_cast<uint8_t>(c)];
+    const int8_t v = hex_decode_table[static_cast<uint8_t>(c)];
+    return (v >= 0 && v <= 15) ? static_cast<int>(v) : -1;
 }
 
 } // namespace simdtext

@@ -145,4 +145,61 @@ void test_utf8() {
         const char data[] = {'c', 'a', 'f', (char)0xC3, (char)0xA9};
         CHECK(valid_utf8({data, 5}));
     }
+
+    // ── Edge cases for fuzz hardening ──────────────────────
+
+    // Empty string
+    {
+        const char* p = nullptr;
+        std::span<const char> empty;
+        CHECK(valid_utf8(empty));
+    }
+
+    // Single byte: null
+    {
+        const char data[] = {0};
+        CHECK(valid_utf8({data, 1}));
+    }
+
+    // All zeros (10 bytes)
+    {
+        std::string s(10, '\0');
+        CHECK(valid_utf8({s.data(), s.size()}));
+    }
+
+    // All 0xFF bytes
+    {
+        std::string s(10, (char)0xFF);
+        CHECK(!valid_utf8({s.data(), s.size()}));
+    }
+
+    // Invalid: overlong 3-byte for U+002F (E0 80 AF)
+    {
+        const char data[] = {(char)0xE0, (char)0x80, (char)0xAF};
+        CHECK(!valid_utf8({data, 3}));
+    }
+
+    // Invalid: surrogate half U+D800 (ED A0 80)
+    {
+        const char data[] = {(char)0xED, (char)0xA0, (char)0x80};
+        CHECK(!valid_utf8({data, 3}));
+    }
+
+    // Invalid: value > U+10FFFF (F4 90 80 80)
+    {
+        const char data[] = {(char)0xF4, (char)0x90, (char)0x80, (char)0x80};
+        CHECK(!valid_utf8({data, 4}));
+    }
+
+    // Invalid: overlong 4-byte (F0 80 80 80 = U+0000)
+    {
+        const char data[] = {(char)0xF0, (char)0x80, (char)0x80, (char)0x80};
+        CHECK(!valid_utf8({data, 4}));
+    }
+
+    // Maximum valid 4-byte: U+10FFFF
+    {
+        const char data[] = {(char)0xF4, (char)0x8F, (char)0xBF, (char)0xBF};
+        CHECK(valid_utf8({data, 4}));
+    }
 }

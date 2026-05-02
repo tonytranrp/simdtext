@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <random>
 #include <vector>
+#include <sstream>
 
 #ifdef SIMDTEXT_HAVE_SIMDUTF
 #include <simdutf.h>

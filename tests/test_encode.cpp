@@ -176,4 +176,90 @@ void test_encode() {
         // Invalid base64 chars: implementation may return partial/error
         // Don't assert on size since behavior varies
     }
+
+    // ── Edge cases for fuzz hardening ──────────────────────
+
+    // Base64: wrong padding (single =)
+    {
+        auto result = base64_decode_to("TWFu=", std::span<std::byte>{});
+        // Length % 4 != 0, so should error
+        CHECK(result.error != ErrorCode::Ok);
+    }
+
+    // Base64: non-base64 characters in valid-length input
+    {
+        std::byte buf[3];
+        auto result = base64_decode_to("!!??", {buf, 3});
+        CHECK(result.error != ErrorCode::Ok);
+    }
+
+    // Base64: empty input roundtrip
+    {
+        auto encoded = base64_encode({});
+        CHECK_EQ(encoded, "");
+        auto decoded = base64_decode(encoded);
+        CHECK_EQ(decoded.size(), 0u);
+    }
+
+    // Hex: odd-length input
+    {
+        std::byte buf[1];
+        auto result = hex_decode_to("A", {buf, 1});
+        CHECK(result.error != ErrorCode::Ok);
+    }
+
+    // Hex: invalid characters (non-hex)
+    {
+        std::byte buf[1];
+        auto result = hex_decode_to("GG", {buf, 1});
+        CHECK(result.error != ErrorCode::Ok);
+    }
+
+    // URL decode: bare % at end
+    {
+        std::string result = url_decode("hello%");
+        CHECK_EQ(result, "hello%");
+    }
+
+    // URL decode: % followed by non-hex
+    {
+        std::string result = url_decode("%GG");
+        CHECK_EQ(result, "%GG");
+    }
+
+    // URL decode: %00 (null byte)
+    {
+        std::string result = url_decode("%00");
+        CHECK_EQ(result.size(), 1u);
+        CHECK_EQ(result[0], '\0');
+    }
+
+    // URL decode: % at very end with only one char after
+    {
+        std::string result = url_decode("%0");
+        CHECK_EQ(result, "%0");
+    }
+
+    // Base64: single byte roundtrip
+    {
+        std::byte data[] = {std::byte(0x42)};
+        auto encoded = base64_encode(data);
+        auto decoded = base64_decode(encoded);
+        CHECK_EQ(decoded.size(), 1u);
+        CHECK_EQ(decoded[0], std::byte(0x42));
+    }
+
+    // Hex: all zeros
+    {
+        std::string s(4, '\0');
+        auto encoded = hex_encode(to_bytes(s));
+        CHECK_EQ(encoded, "00000000");
+    }
+
+    // Hex: all 0xFF
+    {
+        std::string s(4, (char)0xFF);
+        auto encoded = hex_encode(to_bytes(s));
+        CHECK_EQ(encoded, "ffffffff");
+    }
 }

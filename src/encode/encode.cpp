@@ -83,9 +83,9 @@ DecodeResult hex_decode_to(std::string_view input, std::span<std::byte> output) 
     for (size_t i = 0; i < byte_count; ++i) {
         const int8_t hi = hex_decode_table[src[i * 2]];
         const int8_t lo = hex_decode_table[src[i * 2 + 1]];
-        if (hi < 0 || lo < 0) {
+        if (hi < 0 || lo < 0 || hi > 15 || lo > 15) {
             result.error = ErrorCode::InvalidChar;
-            result.error_offset = i * 2 + (hi < 0 ? 0u : 1u);
+            result.error_offset = i * 2 + (hi < 0 || hi > 15 ? 0u : 1u);
             return result;
         }
         dst[i] = static_cast<uint8_t>((static_cast<uint8_t>(hi) << 4) | static_cast<uint8_t>(lo));

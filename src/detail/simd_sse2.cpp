@@ -5,19 +5,24 @@
 #include <intrin.h>
 #endif
 
+// Target SSE2 only. Stay within SSE2 instruction set — no SSSE3, no popcnt.
+// Use movemask + SWAR popcount to avoid function call overhead.
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC push_options
+#pragma GCC target("sse2")
+#pragma GCC optimize("no-tree-vectorize")
+#endif
+
 namespace simdtext::detail::sse2 {
 
 namespace {
-inline int popcount32(unsigned int x) {
-#if defined(_MSC_VER)
-    return static_cast<int>(__popcnt(x));
-#elif defined(__GNUC__) || defined(__clang__)
-    return __builtin_popcount(x);
-#else
+
+// SWAR popcount — pure arithmetic, no hardware popcnt needed
+// Inlines to ~5 ALU instructions, no function call
+inline int popcount16(unsigned int x) {
     x = x - ((x >> 1) & 0x55555555u);
     x = (x & 0x33333333u) + ((x >> 2) & 0x33333333u);
     return static_cast<int>((((x + (x >> 4)) & 0x0F0F0F0Fu) * 0x01010101u) >> 24);
-#endif
 }
 
 inline int ctz32(unsigned int x) {
@@ -38,13 +43,16 @@ inline int ctz32(unsigned int x) {
     return n;
 #endif
 }
+
 } // anonymous namespace
 
 size_t count_byte(const char* data, size_t size, char byte) {
     const __m128i vbyte = _mm_set1_epi8(byte);
     size_t count = 0;
     size_t i = 0;
-    // 4x unrolled loop to hide popcount latency
+
+    // 4x unrolled: process 64 bytes per iteration
+    // Use movemask → SWAR popcount to avoid scalar function calls
     for (; i + 64 <= size; i += 64) {
         __m128i c0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i));
         __m128i c1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i + 16));
@@ -54,13 +62,16 @@ size_t count_byte(const char* data, size_t size, char byte) {
         unsigned int m1 = static_cast<unsigned int>(_mm_movemask_epi8(_mm_cmpeq_epi8(c1, vbyte)));
         unsigned int m2 = static_cast<unsigned int>(_mm_movemask_epi8(_mm_cmpeq_epi8(c2, vbyte)));
         unsigned int m3 = static_cast<unsigned int>(_mm_movemask_epi8(_mm_cmpeq_epi8(c3, vbyte)));
-        count += popcount32(m0) + popcount32(m1) + popcount32(m2) + popcount32(m3);
+        // Combine popcounts to reduce loop overhead
+        count += static_cast<size_t>(popcount16(m0) + popcount16(m1) + popcount16(m2) + popcount16(m3));
     }
+
     for (; i + 16 <= size; i += 16) {
         __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i));
-        __m128i eq = _mm_cmpeq_epi8(chunk, vbyte);
-        count += popcount32(static_cast<unsigned int>(_mm_movemask_epi8(eq)));
+        unsigned int mask = static_cast<unsigned int>(_mm_movemask_epi8(_mm_cmpeq_epi8(chunk, vbyte)));
+        count += popcount16(mask);
     }
+
     for (; i < size; ++i)
         if (data[i] == byte) ++count;
     return count;
@@ -69,7 +80,7 @@ size_t count_byte(const char* data, size_t size, char byte) {
 bool is_ascii(const char* data, size_t size) {
     const __m128i vhigh = _mm_set1_epi8(static_cast<char>(0x80));
     size_t i = 0;
-    // Accumulate across 4 vectors before branching
+    // Accumulate across 4 vectors before branching (reduce mispredicts)
     for (; i + 64 <= size; i += 64) {
         __m128i c0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i));
         __m128i c1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i + 16));
@@ -90,19 +101,14 @@ bool is_ascii(const char* data, size_t size) {
 }
 
 void lowercase_ascii(char* data, size_t size) {
-    // XOR-based case flip: bit 5 is the case bit
-    // is_upper = (c >= 'A') & (c <= 'Z')  →  mask = 0xFF if upper, else 0x00
-    // result = c ^ (mask & 0x20)
-    const __m128i vupper = _mm_set1_epi8('A' - 1);  // compare > 'A'-1 means >= 'A'
-    const __m128i vupper_end = _mm_set1_epi8('Z' + 1); // compare < 'Z'+1 means <= 'Z'
+    const __m128i vA = _mm_set1_epi8('A' - 1);
+    const __m128i vZ1 = _mm_set1_epi8('Z' + 1);
     const __m128i vbit5 = _mm_set1_epi8(0x20);
     size_t i = 0;
     for (; i + 16 <= size; i += 16) {
         __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i));
-        // Signed comparison: gt means strictly greater, lt means strictly less
-        // is_upper = !(chunk > 'Z') & !(chunk < 'A') = (chunk <= 'Z') & (chunk >= 'A')
-        __m128i not_above = _mm_cmplt_epi8(chunk, vupper_end);   // chunk < 'Z'+1 ↔ chunk <= 'Z'
-        __m128i not_below = _mm_cmpgt_epi8(chunk, vupper);       // chunk > 'A'-1 ↔ chunk >= 'A'
+        __m128i not_above = _mm_cmplt_epi8(chunk, vZ1);
+        __m128i not_below = _mm_cmpgt_epi8(chunk, vA);
         __m128i is_upper = _mm_and_si128(not_above, not_below);
         __m128i lowered = _mm_xor_si128(chunk, _mm_and_si128(is_upper, vbit5));
         _mm_storeu_si128(reinterpret_cast<__m128i*>(data + i), lowered);
@@ -114,14 +120,14 @@ void lowercase_ascii(char* data, size_t size) {
 }
 
 void uppercase_ascii(char* data, size_t size) {
-    const __m128i vlower = _mm_set1_epi8('a' - 1);
-    const __m128i vlower_end = _mm_set1_epi8('z' + 1);
+    const __m128i va = _mm_set1_epi8('a' - 1);
+    const __m128i vz1 = _mm_set1_epi8('z' + 1);
     const __m128i vbit5 = _mm_set1_epi8(0x20);
     size_t i = 0;
     for (; i + 16 <= size; i += 16) {
         __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i));
-        __m128i not_above = _mm_cmplt_epi8(chunk, vlower_end);
-        __m128i not_below = _mm_cmpgt_epi8(chunk, vlower);
+        __m128i not_above = _mm_cmplt_epi8(chunk, vz1);
+        __m128i not_below = _mm_cmpgt_epi8(chunk, va);
         __m128i is_lower = _mm_and_si128(not_above, not_below);
         __m128i uppered = _mm_xor_si128(chunk, _mm_and_si128(is_lower, vbit5));
         _mm_storeu_si128(reinterpret_cast<__m128i*>(data + i), uppered);
@@ -137,11 +143,9 @@ const char* find_byte(const char* data, size_t size, char byte) {
     size_t i = 0;
     for (; i + 16 <= size; i += 16) {
         __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i));
-        __m128i eq = _mm_cmpeq_epi8(chunk, vbyte);
-        int mask = _mm_movemask_epi8(eq);
-        if (mask != 0) {
+        int mask = _mm_movemask_epi8(_mm_cmpeq_epi8(chunk, vbyte));
+        if (mask != 0)
             return data + i + ctz32(static_cast<unsigned int>(mask));
-        }
     }
     for (; i < size; ++i)
         if (data[i] == byte) return data + i;
@@ -149,3 +153,7 @@ const char* find_byte(const char* data, size_t size, char byte) {
 }
 
 } // namespace simdtext::detail::sse2
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC pop_options
+#endif
