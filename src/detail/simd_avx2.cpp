@@ -129,34 +129,33 @@ size_t count_byte(const char* data, size_t size, char byte) {
 bool is_ascii(const char* data, size_t size) {
     const __m256i vhigh = _mm256_set1_epi8(static_cast<char>(0x80));
     size_t i = 0;
-    // 4x unrolled: accumulate OR across 4 vectors before branching
+    // 4x unrolled with vptest (1 instruction instead of vpand+pmovmskb+test)
     for (; i + 128 <= size; i += 128) {
         __m256i c0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i));
         __m256i c1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i + 32));
         __m256i c2 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i + 64));
         __m256i c3 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i + 96));
         __m256i ored = _mm256_or_si256(_mm256_or_si256(c0, c1), _mm256_or_si256(c2, c3));
-        if (_mm256_movemask_epi8(_mm256_and_si256(ored, vhigh)) != 0)
+        if (!_mm256_testz_si256(ored, vhigh))
             return false;
     }
-    // 64-byte
     for (; i + 64 <= size; i += 64) {
         __m256i c0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i));
         __m256i c1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i + 32));
         __m256i ored = _mm256_or_si256(c0, c1);
-        if (_mm256_movemask_epi8(_mm256_and_si256(ored, vhigh)) != 0)
+        if (!_mm256_testz_si256(ored, vhigh))
             return false;
     }
     for (; i + 32 <= size; i += 32) {
         __m256i chunk = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i));
-        if (_mm256_movemask_epi8(_mm256_and_si256(chunk, vhigh)) != 0)
+        if (!_mm256_testz_si256(chunk, vhigh))
             return false;
     }
     // Tail with SSE2
     if (i + 16 <= size) {
         const __m128i vhigh16 = _mm_set1_epi8(static_cast<char>(0x80));
         __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i));
-        if (_mm_movemask_epi8(_mm_and_si128(chunk, vhigh16)) != 0)
+        if (!_mm_testz_si128(chunk, vhigh16))
             return false;
         i += 16;
     }
