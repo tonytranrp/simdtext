@@ -295,102 +295,68 @@ const char* find_byte(const char* data, size_t size, char byte) {
 
 bool validate_utf8(const char* data, size_t size) {
     const auto* p = reinterpret_cast<const uint8_t*>(data);
-    const auto* end = p + size;
+    const __m256i vhigh = _mm256_set1_epi8(static_cast<char>(0x80));
     int expected_cont = 0;
     uint8_t prev_lead_byte = 0;
     uint8_t prev_lead_class = 0;
 
-    // AVX2 fast path: skip all-ASCII chunks
-    const __m256i vhigh = _mm256_set1_epi8(static_cast<char>(0x80));
+    // Phase 1: ASCII fast path (same as is_ascii with vptest)
+    // Process 128 bytes at a time, skip detailed validation for ASCII chunks
     size_t i = 0;
-    for (; i + 32 <= size; i += 32) {
-        __m256i chunk = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i));
-        if (_mm256_movemask_epi8(_mm256_and_si256(chunk, vhigh)) == 0) {
-            // All ASCII — but only valid if we're not expecting continuation bytes
+    for (; i + 128 <= size; i += 128) {
+        __m256i c0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i));
+        __m256i c1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i + 32));
+        __m256i c2 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i + 64));
+        __m256i c3 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i + 96));
+        __m256i ored = _mm256_or_si256(_mm256_or_si256(c0, c1), _mm256_or_si256(c2, c3));
+        if (_mm256_testz_si256(ored, vhigh)) {
+            if (expected_cont > 0) return false;
+            continue; // All ASCII — skip detailed validation
+        }
+        // Non-ASCII found — process byte-by-byte within this 128-byte chunk
+        goto non_ascii;
+    }
+    for (; i + 64 <= size; i += 64) {
+        __m256i c0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i));
+        __m256i c1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i + 32));
+        __m256i ored = _mm256_or_si256(c0, c1);
+        if (_mm256_testz_si256(ored, vhigh)) {
             if (expected_cont > 0) return false;
             continue;
         }
-        // Non-ASCII: process byte-by-byte within the chunk
-        const auto* cp = reinterpret_cast<const uint8_t*>(data + i);
-        const auto* chunk_end = cp + 32;
-        while (cp < chunk_end) {
-            const auto byte = *cp++;
-            if (byte <= 0x7F) {
-                if (expected_cont > 0) return false;
-                continue;
-            } else if ((byte & 0xE0) == 0xC0) {
-                if (expected_cont > 0) return false;
-                if (byte < 0xC2) return false;
-                expected_cont = 1;
-                prev_lead_class = 2;
-                prev_lead_byte = byte;
-            } else if ((byte & 0xF0) == 0xE0) {
-                if (expected_cont > 0) return false;
-                expected_cont = 2;
-                prev_lead_class = 3;
-                prev_lead_byte = byte;
-            } else if ((byte & 0xF8) == 0xF0) {
-                if (expected_cont > 0) return false;
-                if (byte > 0xF4) return false;
-                expected_cont = 3;
-                prev_lead_class = 4;
-                prev_lead_byte = byte;
-            } else if ((byte & 0xC0) == 0x80) {
-                if (expected_cont == 0) return false;
-                // Range checks for first continuation byte after lead
-                if (expected_cont == prev_lead_class - 1) {
-                    if (prev_lead_byte == 0xE0 && byte < 0xA0) return false;
-                    if (prev_lead_byte == 0xED && byte > 0x9F) return false;
-                    if (prev_lead_byte == 0xF0 && byte < 0x90) return false;
-                    if (prev_lead_byte == 0xF4 && byte > 0x8F) return false;
-                }
-                --expected_cont;
-            } else {
-                return false;
-            }
-        }
+        goto non_ascii;
     }
-    // SSE2 tail for remaining 16-31 bytes
+    for (; i + 32 <= size; i += 32) {
+        __m256i chunk = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(data + i));
+        if (_mm256_testz_si256(chunk, vhigh)) {
+            if (expected_cont > 0) return false;
+            continue;
+        }
+        goto non_ascii;
+    }
+    // 16-byte tail
     if (i + 16 <= size) {
         __m128i chunk16 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(data + i));
-        if (_mm_movemask_epi8(_mm_and_si128(chunk16, _mm_set1_epi8(static_cast<char>(0x80)))) != 0 || expected_cont > 0) {
-            const auto* cp = reinterpret_cast<const uint8_t*>(data + i);
-            const auto* chunk_end = cp + 16;
-            while (cp < chunk_end) {
-                const auto byte = *cp++;
-                if (byte <= 0x7F) {
-                    if (expected_cont > 0) return false;
-                } else if ((byte & 0xE0) == 0xC0) {
-                    if (expected_cont > 0) return false;
-                    if (byte < 0xC2) return false;
-                    expected_cont = 1; prev_lead_class = 2; prev_lead_byte = byte;
-                } else if ((byte & 0xF0) == 0xE0) {
-                    if (expected_cont > 0) return false;
-                    expected_cont = 2; prev_lead_class = 3; prev_lead_byte = byte;
-                } else if ((byte & 0xF8) == 0xF0) {
-                    if (expected_cont > 0) return false;
-                    if (byte > 0xF4) return false;
-                    expected_cont = 3; prev_lead_class = 4; prev_lead_byte = byte;
-                } else if ((byte & 0xC0) == 0x80) {
-                    if (expected_cont == 0) return false;
-                    if (expected_cont == prev_lead_class - 1) {
-                        if (prev_lead_byte == 0xE0 && byte < 0xA0) return false;
-                        if (prev_lead_byte == 0xED && byte > 0x9F) return false;
-                        if (prev_lead_byte == 0xF0 && byte < 0x90) return false;
-                        if (prev_lead_byte == 0xF4 && byte > 0x8F) return false;
-                    }
-                    --expected_cont;
-                } else return false;
-            }
-        }
+        if (!_mm_testz_si128(chunk16, _mm_set1_epi8(static_cast<char>(0x80))) || expected_cont > 0)
+            goto non_ascii;
         i += 16;
     }
-    // Scalar tail
-    const auto* cp = reinterpret_cast<const uint8_t*>(data + i);
-    while (cp < end) {
-        const auto byte = *cp++;
+    // Byte-by-byte tail
+    for (; i < size; ++i) {
+        const auto byte = static_cast<uint8_t>(data[i]);
+        if (byte <= 0x7F) { if (expected_cont > 0) return false; continue; }
+        goto non_ascii;
+    }
+    return expected_cont == 0;
+
+non_ascii:
+    // Phase 2: Non-ASCII detailed validation
+    // Process from the start of the non-ASCII chunk
+    for (; i < size; ++i) {
+        const auto byte = static_cast<uint8_t>(data[i]);
         if (byte <= 0x7F) {
             if (expected_cont > 0) return false;
+            continue;
         } else if ((byte & 0xE0) == 0xC0) {
             if (expected_cont > 0) return false;
             if (byte < 0xC2) return false;
@@ -411,11 +377,12 @@ bool validate_utf8(const char* data, size_t size) {
                 if (prev_lead_byte == 0xF4 && byte > 0x8F) return false;
             }
             --expected_cont;
-        } else return false;
+        } else {
+            return false;
+        }
     }
     return expected_cont == 0;
 }
-
 
 // ── AVX2 count_code_points ──────────────────────────────────────
 // Count Unicode code points = count bytes that are NOT continuation bytes (10xxxxxx)
