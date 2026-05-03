@@ -919,7 +919,6 @@ std::string url_decode_hwy(const uint8_t* src, size_t src_size) {
     const auto vPercent = hn::Set(d, uint8_t('%'));
     const auto vPlus    = hn::Set(d, uint8_t('+'));
 
-    // Output is at most src_size bytes
     std::string result(src_size, '\0');
     auto* dst = reinterpret_cast<uint8_t*>(result.data());
 
@@ -927,9 +926,14 @@ std::string url_decode_hwy(const uint8_t* src, size_t src_size) {
     size_t j = 0;
 
     while (i < src_size) {
+        // Quick check: if current char is % or +, skip the SIMD scan
+        if (src[i] == '%' || src[i] == '+') {
+            goto process_special;
+        }
+
         // Use SIMD to find next '%' or '+' from position i
-        size_t found = src_size;
         {
+            size_t found = src_size;
             size_t si = i;
             for (; si + N <= src_size; si += N) {
                 const auto v = hn::LoadU(d, src + si);
@@ -945,38 +949,42 @@ std::string url_decode_hwy(const uint8_t* src, size_t src_size) {
                     if (src[si] == '%' || src[si] == '+') { found = si; break; }
                 }
             }
+
+            if (found > i) {
+                const size_t len = found - i;
+                std::memcpy(dst + j, src + i, len);
+                j += len;
+                i = found;
+            }
         }
 
-        // Copy literal run
-        if (found > i) {
-            std::memcpy(dst + j, src + i, found - i);
-            j += found - i;
-            i = found;
-        }
-
+    process_special:
         if (i >= src_size) break;
 
-        // Process special character
-        if (src[i] == '%' && i + 2 < src_size) {
-            const int8_t hi = hex_nib(src[i + 1]);
-            const int8_t lo = hex_nib(src[i + 2]);
-            if (hi >= 0 && lo >= 0) {
-                dst[j++] = static_cast<uint8_t>((hi << 4) | lo);
-                i += 3;
-                continue;
+        // Process consecutive special chars without re-scanning
+        while (i < src_size) {
+            if (src[i] == '%' && i + 2 < src_size) {
+                const int8_t hi = hex_nib(src[i + 1]);
+                const int8_t lo = hex_nib(src[i + 2]);
+                if (hi >= 0 && lo >= 0) {
+                    dst[j++] = static_cast<uint8_t>((hi << 4) | lo);
+                    i += 3;
+                    continue;
+                }
+                dst[j++] = src[i++];
+            } else if (src[i] == '+') {
+                dst[j++] = ' ';
+                ++i;
+            } else {
+                break;
             }
-            dst[j++] = src[i++];
-        } else if (src[i] == '+') {
-            dst[j++] = ' ';
-            ++i;
-        } else {
-            dst[j++] = src[i++];
         }
     }
 
     result.resize(j);
     return result;
 }
+
 
 } // namespace simdtext
 
