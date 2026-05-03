@@ -4,7 +4,11 @@
 #include <cstring>
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-#include <tmmintrin.h>  // SSSE3
+#include <immintrin.h>
+#endif
+
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86))
+#pragma GCC target ("avx2")
 #endif
 
 // Hex decode lookup table — replaces branching hex_val for decode hot paths
@@ -89,93 +93,59 @@ std::string hex_encode(std::span<const std::byte> input) {
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 
-__attribute__((target("ssse3")))
-static DecodeResult hex_decode_ssse3(const uint8_t* src, size_t src_size, uint8_t* dst) noexcept {
+// AVX2 hex_decode using maddubs + packus_epi16 (fast-hex / zbjornson)
+static DecodeResult hex_decode_avx2(const uint8_t* src, size_t src_size, uint8_t* dst) noexcept {
     DecodeResult result{0, 0, ErrorCode::Ok};
     const size_t byte_count = src_size / 2;
+    const __m256i A_MASK = _mm256_setr_epi8(0,-1,2,-1,4,-1,6,-1,8,-1,10,-1,12,-1,14,-1,0,-1,2,-1,4,-1,6,-1,8,-1,10,-1,12,-1,14,-1);
+    const __m256i B_MASK = _mm256_setr_epi8(1,-1,3,-1,5,-1,7,-1,9,-1,11,-1,13,-1,15,-1,1,-1,3,-1,5,-1,7,-1,9,-1,11,-1,13,-1,15,-1);
+    const __m256i v9 = _mm256_set1_epi16(9);
+    const __m256i v0F16 = _mm256_set1_epi16(0x0F);
+    const __m256i vF0 = _mm256_set1_epi8(static_cast<char>(0xF0));
+    const __m256i v0F8 = _mm256_set1_epi8(0x0F);
+    const __m256i vInvMask = _mm256_set1_epi16(static_cast<short>(0xFFF0));
 
-    const __m128i v_or_mask = _mm_set1_epi8(0x20);
-    const __m128i v_sub     = _mm_set1_epi8('0');     // 0x30
-    const __m128i v_adj     = _mm_set1_epi8(0x27);    // subtract this for alpha chars
-    const __m128i v_9       = _mm_set1_epi8(9);
-
-    const __m128i v_lo_mask = _mm_set1_epi8(0x0F);
-    const __m128i v_hi_mask = _mm_set1_epi8(0xF0);
-
-    size_t i = 0;  // byte index (output)
-    // Process 16 output bytes per iteration (32 input chars)
-    for (; i + 16 <= byte_count; i += 16) {
-        // Load 16 hi-nibble chars and 16 lo-nibble chars
-        __m128i hi_raw = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i * 2));
-        __m128i lo_raw = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i * 2 + 16));
-
-        // Normalize to lowercase: 'A'-'F' → 'a'-'f', digits unaffected
-        __m128i hi_norm = _mm_or_si128(hi_raw, v_or_mask);
-        __m128i lo_norm = _mm_or_si128(lo_raw, v_or_mask);
-
-        // Subtract '0'
-        __m128i hi_val = _mm_sub_epi8(hi_norm, v_sub);
-        __m128i lo_val = _mm_sub_epi8(lo_norm, v_sub);
-
-        // For alpha chars (val > 9 after subtract), subtract 0x27 more
-        // val > 9 means the char was 'a'-'f' (after normalization)
-        __m128i hi_alpha = _mm_cmpgt_epi8(hi_val, v_9);
-        __m128i lo_alpha = _mm_cmpgt_epi8(lo_val, v_9);
-        hi_val = _mm_sub_epi8(hi_val, _mm_and_si128(hi_alpha, v_adj));
-        lo_val = _mm_sub_epi8(lo_val, _mm_and_si128(lo_alpha, v_adj));
-
-        // Validate: any nibble > 15 is invalid (invalid hex char)
-        // After adjustment, valid nibbles are 0-15. Invalid chars can produce
-        // values outside 0-15. Check hi_val > 15 || lo_val > 15 using signed cmpgt vs 15.
-        // But signed compare treats values > 127 as negative. Use unsigned: cmpgt with 0x0F.
-        // Actually, _mm_cmpgt_epi8 is signed. For values 0-15 this is fine.
-        // Invalid chars may produce negative values (high bit set), which would pass
-        // signed > 15 check (negative < 15). So also check for negative values.
-        // Use: invalid = val > 15 || val < 0 (i.e., high bit set OR val > 15)
-        // Simplified: val with high bit set OR val > 15 = val > 15 in unsigned.
-        // We can check: (val & 0xF0) != 0, i.e., any of the upper 4 bits are set.
-        // Equivalent: val > 15 unsigned = val has bits outside low 4.
-        // Use: or all hi/lo vals together, AND with 0xF0 each, check if non-zero.
-        __m128i hi_err = _mm_andnot_si128(v_lo_mask, hi_val);  // upper 4 bits
-        __m128i lo_err = _mm_andnot_si128(v_lo_mask, lo_val);
-        __m128i any_err = _mm_or_si128(hi_err, lo_err);
-        if (_mm_movemask_epi8(any_err) != 0) {
-            // Fall back to scalar for this chunk to get exact error offset
-            for (size_t k = 0; k < 16 && (i + k) < byte_count; ++k) {
-                const int8_t hv = hex_decode_table[src[(i + k) * 2]];
-                const int8_t lv = hex_decode_table[src[(i + k) * 2 + 1]];
-                if (hv < 0 || hv > 15) {
-                    result.error = ErrorCode::InvalidChar;
-                    result.error_offset = (i + k) * 2;
-                    return result;
-                }
-                if (lv < 0 || lv > 15) {
-                    result.error = ErrorCode::InvalidChar;
-                    result.error_offset = (i + k) * 2 + 1;
-                    return result;
-                }
-            }
-        }
-
-        // Combine: (hi << 4) | lo
-        // No _mm_slli_epi8 in SSE2/SSSE3; use 16-bit shift + mask to clear leaked bits
-        __m128i hi_shifted = _mm_and_si128(_mm_slli_epi16(hi_val, 4), v_hi_mask);
-        __m128i combined = _mm_or_si128(hi_shifted, _mm_and_si128(lo_val, v_lo_mask));
-        _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i), combined);
+    size_t i = 0;
+    for (; i + 32 <= byte_count; i += 32) {
+        __m256i av1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i * 2));
+        __m256i av2 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i * 2 + 32));
+        __m256i hi1 = _mm256_shuffle_epi8(av1, A_MASK);
+        __m256i lo1 = _mm256_shuffle_epi8(av1, B_MASK);
+        __m256i hi2 = _mm256_shuffle_epi8(av2, A_MASK);
+        __m256i lo2 = _mm256_shuffle_epi8(av2, B_MASK);
+        __m256i hi1v = _mm256_add_epi16(_mm256_maddubs_epi16(_mm256_srai_epi16(hi1, 6), v9), _mm256_and_si256(hi1, v0F16));
+        __m256i lo1v = _mm256_add_epi16(_mm256_maddubs_epi16(_mm256_srai_epi16(lo1, 6), v9), _mm256_and_si256(lo1, v0F16));
+        __m256i hi2v = _mm256_add_epi16(_mm256_maddubs_epi16(_mm256_srai_epi16(hi2, 6), v9), _mm256_and_si256(hi2, v0F16));
+        __m256i lo2v = _mm256_add_epi16(_mm256_maddubs_epi16(_mm256_srai_epi16(lo2, 6), v9), _mm256_and_si256(lo2, v0F16));
+        __m256i all = _mm256_or_si256(_mm256_or_si256(hi1v, lo1v), _mm256_or_si256(hi2v, lo2v));
+        if (!_mm256_testz_si256(_mm256_and_si256(all, vInvMask), _mm256_and_si256(all, vInvMask))) break;
+        __m256i c1 = _mm256_or_si256(_mm256_and_si256(_mm256_slli_epi16(hi1v, 4), vF0), _mm256_and_si256(lo1v, v0F8));
+        __m256i c2 = _mm256_or_si256(_mm256_and_si256(_mm256_slli_epi16(hi2v, 4), vF0), _mm256_and_si256(lo2v, v0F8));
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), _mm256_permute4x64_epi64(_mm256_packus_epi16(c1, c2), 0xD8));
     }
-
-    // Scalar tail
+    for (; i + 16 <= byte_count; i += 16) {
+        __m256i av = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i * 2));
+        __m256i hi = _mm256_shuffle_epi8(av, A_MASK);
+        __m256i lo = _mm256_shuffle_epi8(av, B_MASK);
+        __m256i hiv = _mm256_add_epi16(_mm256_maddubs_epi16(_mm256_srai_epi16(hi, 6), v9), _mm256_and_si256(hi, v0F16));
+        __m256i lov = _mm256_add_epi16(_mm256_maddubs_epi16(_mm256_srai_epi16(lo, 6), v9), _mm256_and_si256(lo, v0F16));
+        __m256i all = _mm256_or_si256(hiv, lov);
+        if (!_mm256_testz_si256(_mm256_and_si256(all, vInvMask), _mm256_and_si256(all, vInvMask))) break;
+        __m256i combined = _mm256_or_si256(_mm256_and_si256(_mm256_slli_epi16(hiv, 4), vF0), _mm256_and_si256(lov, v0F8));
+        __m128i lo_lane = _mm256_castsi256_si128(combined);
+        __m128i hi_lane = _mm256_extracti128_si256(combined, 1);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i), _mm_packus_epi16(lo_lane, hi_lane));
+    }
     for (; i < byte_count; ++i) {
-        const int8_t hi = hex_decode_table[src[i * 2]];
-        const int8_t lo = hex_decode_table[src[i * 2 + 1]];
-        if (hi < 0 || lo < 0 || hi > 15 || lo > 15) {
+        const int8_t h = hex_decode_table[src[i * 2]];
+        const int8_t l = hex_decode_table[src[i * 2 + 1]];
+        if (h < 0 || l < 0 || h > 15 || l > 15) {
             result.error = ErrorCode::InvalidChar;
-            result.error_offset = i * 2 + (hi < 0 || hi > 15 ? 0u : 1u);
+            result.error_offset = i * 2 + (h < 0 || h > 15 ? 0u : 1u);
             return result;
         }
-        dst[i] = static_cast<uint8_t>((static_cast<uint8_t>(hi) << 4) | static_cast<uint8_t>(lo));
+        dst[i] = static_cast<uint8_t>((static_cast<uint8_t>(h) << 4) | static_cast<uint8_t>(l));
     }
-
     result.bytes_written = byte_count;
     return result;
 }
@@ -200,12 +170,10 @@ DecodeResult hex_decode_to(std::string_view input, std::span<std::byte> output) 
     const auto* SIMDTEXT_RESTRICT src = reinterpret_cast<const uint8_t*>(input.data());
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
-    // SSSE3 hex_decode disabled — _mm_slli_epi16 cross-byte leakage makes
-    // correct hi<<4 | lo combine difficult. Scalar path is correct and fast enough.
-    // TODO: implement using pshufb-based nibble lookup instead of shift+mask.
-    // if (__builtin_cpu_supports("ssse3") && byte_count >= 16) {
-    //     return hex_decode_ssse3(src, input.size(), dst);
-    // }
+    // AVX2 fast path using maddubs + packus_epi16
+    if (__builtin_cpu_supports("avx2") && byte_count >= 16) {
+        return hex_decode_avx2(src, input.size(), dst);
+    }
 #endif
 
     for (size_t i = 0; i < byte_count; ++i) {
