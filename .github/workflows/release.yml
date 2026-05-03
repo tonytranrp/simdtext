@@ -39,7 +39,7 @@ jobs:
           cd install
           tar czf ../simdtext-linux-x86_64.tar.gz .
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: simdtext-linux-x86_64
           path: simdtext-linux-x86_64.tar.gz
@@ -82,7 +82,7 @@ jobs:
           cd install
           tar czf ../simdtext-${{ matrix.suffix }}.tar.gz .
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: simdtext-${{ matrix.suffix }}
           path: simdtext-${{ matrix.suffix }}.tar.gz
@@ -117,7 +117,7 @@ jobs:
           cd install
           Compress-Archive -Path * -DestinationPath ..\simdtext-windows-x86_64.zip
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: simdtext-windows-x86_64
           path: simdtext-windows-x86_64.zip
