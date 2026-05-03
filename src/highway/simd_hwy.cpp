@@ -507,26 +507,9 @@ bool valid_utf8(std::span<const char> input) {
 // but the classification is SIMD-accelerated which is the hot path.
 
 size_t url_encode_to_hwy(const uint8_t* src, size_t src_size, char* dst, size_t dst_size) {
-    const hn::ScalableTag<uint8_t> d;
-    const size_t N = hn::Lanes(d);
-
-    // Safe ranges
-    const auto va = hn::Set(d, uint8_t('a'));
-    const auto vz = hn::Set(d, uint8_t('z'));
-    const auto vA = hn::Set(d, uint8_t('A'));
-    const auto vZ = hn::Set(d, uint8_t('Z'));
-    const auto v0 = hn::Set(d, uint8_t('0'));
-    const auto v9 = hn::Set(d, uint8_t('9'));
-    const auto vMinus  = hn::Set(d, uint8_t('-'));
-    const auto vDot    = hn::Set(d, uint8_t('.'));
-    const auto vUscore = hn::Set(d, uint8_t('_'));
-    const auto vTilde  = hn::Set(d, uint8_t('~'));
-
     static constexpr char hex_chars[16] = {
         '0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F'
     };
-
-    // Inline lookup table for url_safe
     static constexpr uint8_t url_safe_lut[256] = {
         0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
         0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
@@ -546,49 +529,8 @@ size_t url_encode_to_hwy(const uint8_t* src, size_t src_size, char* dst, size_t 
         0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
     };
 
-    size_t j = 0; // output position
-    size_t i = 0; // input position
-
-    for (; i + N <= src_size; i += N) {
-        const auto v = hn::LoadU(d, src + i);
-
-        // Classify: safe = a-z OR A-Z OR 0-9 OR -_.~
-        const auto is_lower = hn::And(hn::Ge(v, va), hn::Le(v, vz));
-        const auto is_upper = hn::And(hn::Ge(v, vA), hn::Le(v, vZ));
-        const auto is_digit = hn::And(hn::Ge(v, v0), hn::Le(v, v9));
-        const auto is_minus = hn::Eq(v, vMinus);
-        const auto is_dot   = hn::Eq(v, vDot);
-        const auto is_uscore= hn::Eq(v, vUscore);
-        const auto is_tilde = hn::Eq(v, vTilde);
-
-        const auto safe = hn::Or(hn::Or(hn::Or(is_lower, is_upper), is_digit),
-                                 hn::Or(hn::Or(is_minus, is_dot), hn::Or(is_uscore, is_tilde)));
-
-        const size_t unsafe_count = hn::CountTrue(d, hn::Not(safe));
-        const size_t needed = N + unsafe_count * 2; // safe=1byte, unsafe=3bytes
-
-        if (j + needed > dst_size) return 0; // overflow check
-
-        const auto unsafe_mask = hn::Not(safe);
-        alignas(64) uint8_t mask_bits[64] = {};
-        hn::StoreMaskBits(d, unsafe_mask, mask_bits);
-
-        // Process each byte in the chunk
-        for (size_t k = 0; k < N; ++k) {
-            const uint8_t uc = src[i + k];
-            const bool is_unsafe = (mask_bits[k / 8] >> (k % 8)) & 1;
-            if (is_unsafe) {
-                dst[j++] = '%';
-                dst[j++] = hex_chars[uc >> 4];
-                dst[j++] = hex_chars[uc & 0x0F];
-            } else {
-                dst[j++] = static_cast<char>(uc);
-            }
-        }
-    }
-
-    // Scalar tail
-    for (; i < src_size; ++i) {
+    size_t j = 0;
+    for (size_t i = 0; i < src_size; ++i) {
         const uint8_t uc = src[i];
         if (url_safe_lut[uc]) {
             if (j >= dst_size) return 0;
@@ -600,9 +542,9 @@ size_t url_encode_to_hwy(const uint8_t* src, size_t src_size, char* dst, size_t 
             dst[j++] = hex_chars[uc & 0x0F];
         }
     }
-
     return j;
 }
+
 
 // SIMD url_encode returning string — uses the same approach but with pre-computed output size
 std::string url_encode_hwy(const uint8_t* src, size_t src_size) {
