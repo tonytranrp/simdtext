@@ -488,6 +488,7 @@ size_t count_code_points(const char* data, size_t size) {
 //   slli_epi16(v, N) → v<<N in low byte (if v<<N < 256), 0 in high byte
 //   srli_epi16(v, N) → v>>N in low byte, 0 in high byte
 
+
 DecodeResult base64_decode_avx2(const uint8_t* src, size_t src_size, uint8_t* dst) noexcept {
     DecodeResult result{0, 0, ErrorCode::Ok};
 
@@ -496,223 +497,97 @@ DecodeResult base64_decode_avx2(const uint8_t* src, size_t src_size, uint8_t* ds
         return result;
     }
 
+    // libbase64-style AVX2 decode: dual pshufb validation + delta-rolling + aqrit packing
+    const __m256i lut_lo = _mm256_setr_epi8(
+        0x15, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+        0x11, 0x11, 0x13, 0x1A, 0x1B, 0x1B, 0x1B, 0x1A,
+        0x15, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+        0x11, 0x11, 0x13, 0x1A, 0x1B, 0x1B, 0x1B, 0x1A);
+    const __m256i lut_hi = _mm256_setr_epi8(
+        0x10, 0x10, 0x01, 0x02, 0x04, 0x08, 0x04, 0x08,
+        0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10,
+        0x10, 0x10, 0x01, 0x02, 0x04, 0x08, 0x04, 0x08,
+        0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10);
+    const __m256i lut_roll = _mm256_setr_epi8(
+        0,  16,  19,   4, -65, -65, -71, -71,
+        0,   0,   0,   0,   0,   0,   0,   0,
+        0,  16,  19,   4, -65, -65, -71, -71,
+        0,   0,   0,   0,   0,   0,   0,   0);
+    const __m256i mask_2F = _mm256_set1_epi8(0x2F);
+    const __m256i maddubs_mul = _mm256_set1_epi16(0x0140);
+    const __m256i madd_mul    = _mm256_set1_epi32(0x00011000);
+    const __m256i pack_shuffle = _mm256_setr_epi8(
+         2,  1,  0,  6,  5,  4, 10,  9,  8, 14, 13, 12, -1, -1, -1, -1,
+         2,  1,  0,  6,  5,  4, 10,  9,  8, 14, 13, 12, -1, -1, -1, -1);
+    const __m256i pack_perm = _mm256_setr_epi32(0, 1, 2, 4, 5, 6, -1, -1);
+
     size_t i = 0;
     size_t j = 0;
 
-    // Range-based char→value constants
-    const __m256i vA = _mm256_set1_epi8('A' - 1);
-    const __m256i vZ = _mm256_set1_epi8('Z' + 1);
-    const __m256i va = _mm256_set1_epi8('a' - 1);
-    const __m256i vz = _mm256_set1_epi8('z' + 1);
-    const __m256i v0 = _mm256_set1_epi8('0' - 1);
-    const __m256i v9 = _mm256_set1_epi8('9' + 1);
-    const __m256i vplus = _mm256_set1_epi8('+');
-    const __m256i vslash = _mm256_set1_epi8('/');
-    const __m256i veq = _mm256_set1_epi8('=');
-    const __m256i sub_AZ = _mm256_set1_epi8(static_cast<char>(0 - 'A'));
-    const __m256i sub_az = _mm256_set1_epi8(static_cast<char>(26 - 'a'));
-    const __m256i sub_09 = _mm256_set1_epi8(static_cast<char>(52 - '0'));
-    const __m256i val_plus  = _mm256_set1_epi8(62);
-    const __m256i val_slash = _mm256_set1_epi8(63);
+    // Inner decode function: validate + convert + pack one 32-byte block
+    auto dec_block = [&](const uint8_t* s, uint8_t* o) -> bool {
+        __m256i str = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(s));
+        __m256i hi_nib = _mm256_and_si256(_mm256_srli_epi32(str, 4), mask_2F);
+        __m256i lo_nib = _mm256_and_si256(str, mask_2F);
+        __m256i hi = _mm256_shuffle_epi8(lut_hi, hi_nib);
+        __m256i lo = _mm256_shuffle_epi8(lut_lo, lo_nib);
+        if (!_mm256_testz_si256(lo, hi)) return false;
 
-    // Packing: pshufb masks to gather a/b/c/d from decoded into low bytes of
-    // 16-bit lanes. decoded per 128-bit lane: [a0,b0,c0,d0, a1,b1,c1,d1, ...]
-    // 0x80 = zero that byte position (pshufb zeros when bit 7 set).
-    //
-    // We need 6 pshufb gathers (a_lo, b_lo, b_hi, c_lo, c_hi, d_lo):
-    //   a_lo: a values in low bytes → slli(2) gives a<<2 in low byte
-    //   b_lo: b values in low bytes → srli(4) gives b>>4 in low byte
-    //   b_hi: b values in low bytes → slli(4) gives b<<4 in low byte
-    //   c_lo: c values in low bytes → srli(2) gives c>>2 in low byte
-    //   c_hi: c values in low bytes → slli(6) gives c<<6 in low byte
-    //   d_lo: d values in low bytes → used as-is
-    //
-    // Wait: slli(b_lo, 4) for 6-bit b: b<<4 max = 63<<4 = 1008, overflows byte!
-    // We only want (b&0xF)<<4 = max 240. So we need to mask b with 0x0F first.
-    // Similarly for c: slli(c_lo, 6) for 6-bit c: c<<6 max = 63<<6 = 4032, overflow.
-    // We only want (c&0x3)<<6 = max 192. So mask c with 0x03 first.
-    //
-    // Alternative: place b in HIGH byte of 16-bit lane, then slli by 4:
-    //   [b, 0] slli(4) → 16-bit value = b*256*16 = b<<12. High byte = b<<4, low byte = 0.
-    //   b<<4 for 6-bit b: max 1008, high byte = 1008/256 = 3, low byte = 240.
-    //   That's not right either - b<<4 overflows the high byte.
-    //
-    // Hmm. The issue is that (b&0xF)<<4 fits in a byte (max 240), but b<<4 doesn't.
-    // So we MUST mask before shifting.
-    //
-    // Plan: use AND with masks before shifting.
-    //   b_masked = b & 0x0F → slli(4) → (b&0xF)<<4, fits in byte
-    //   c_masked = c & 0x03 → slli(6) → (c&3)<<6, fits in byte
-    //
-    // For b>>4 and c>>2: no masking needed since shifting right.
-    // For a<<2: a is 6 bits, a<<2 max = 252, fits in byte. No masking needed.
+        __m256i eq_2F = _mm256_cmpeq_epi8(str, mask_2F);
+        __m256i roll  = _mm256_shuffle_epi8(lut_roll, _mm256_add_epi8(eq_2F, hi_nib));
+        str = _mm256_add_epi8(str, roll);
 
-    const __m256i mask_0F = _mm256_set1_epi8(0x0F);
-    const __m256i mask_03 = _mm256_set1_epi8(0x03);
+        // aqrit packing: 4x6-bit -> 3x8-bit in 3 instructions
+        __m256i t0 = _mm256_maddubs_epi16(str, maddubs_mul);
+        __m256i t1 = _mm256_madd_epi16(t0, madd_mul);
+        __m256i t2 = _mm256_shuffle_epi8(t1, pack_shuffle);
+        t2 = _mm256_permutevar8x32_epi32(t2, pack_perm);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(o), t2);
+        return true;
+    };
 
-    // Shuffle masks: gather values from decoded into LOW bytes of 16-bit lanes.
-    // Per 128-bit lane, decoded has: [a0,b0,c0,d0, a1,b1,c1,d1, a2,b2,c2,d2, a3,b3,c3,d3]
-    // We want a values (indices 0,4,8,12) in the odd positions (low bytes of 16-bit lanes):
-    //   Positions 1,3,5,7,9,11,13,15 in the 128-bit lane
-    // But pshufb can only place one source byte per destination.
-    // With 8 16-bit lanes per 128-bit half, we need 4 a-values in 4 low-byte positions,
-    // and zero in the other 4 low-byte positions and all high-byte positions.
-    //
-    // Actually, we can use all 8 low-byte positions (4 from each 128-bit lane):
-    // Per 128-bit lane, we have 8 16-bit lanes (lanes 0-7):
-    //   low bytes at positions: 1,3,5,7,9,11,13,15
-    //   high bytes at positions: 0,2,4,6,8,10,12,14
-    //
-    // For a-values at positions 0,4,8,12 in the source:
-    //   Place into low bytes of 16-bit lanes 0,1,2,3 → dest positions 1,3,5,7
-    //   High bytes (positions 0,2,4,6) → zero (0x80)
-    //
-    // But we also need b,c,d values in different registers, each using different
-    // low-byte positions. The problem: we only have 4 useful positions per lane
-    // (the 4 low bytes of the first 4 16-bit lanes), but we need to combine
-    // multiple values into the SAME lane.
-    //
-    // REVISED PLAN: Use ALL 8 16-bit lanes per 128-bit half.
-    // Each 16-bit lane produces one output byte.
-    // 32 decoded bytes → 24 output bytes (8 groups × 3 bytes = 24).
-    // We need 3 output registers (out0, out1, out2), each with 8 bytes per lane.
-    //
-    // For out0 = (a<<2) | (b>>4):
-    //   Need a in low byte, shift left by 2: slli(a_lo, 2) → a<<2 in low byte
-    //   Need b in low byte, shift right by 4: srli(b_lo, 4) → b>>4 in low byte
-    //   OR them → out0
-    //   But a and b are from DIFFERENT positions in decoded. We need them in
-    //   the SAME 16-bit lanes to OR them. So both pshufb gathers must place
-    //   values into the same lane positions.
-    //
-    // For a-values at positions [0,4,8,12] in each 128-bit lane:
-    //   pshufb to place into low bytes of lanes [0,2,4,6] (positions 1,5,9,13)
-    // For b-values at positions [1,5,9,13]:
-    //   pshufb to place into low bytes of lanes [0,2,4,6] (same positions!)
-    //
-    // out0 for both 128-bit lanes = 8 bytes total, but we need 8 output bytes
-    // (one per group). Each 128-bit lane has 4 groups, so 4 output bytes per lane.
-    // We use 4 out of 8 low-byte positions per lane. That's fine.
-    //
-    // Similarly for out1 and out2.
-
-    // Shuffle masks: gather a/b/c/d into alternating low-byte positions.
-    // Lane layout per 128-bit half: [H0,L0, H1,L1, H2,L2, H3,L3, H4,L4, H5,L5, H6,L6, H7,L7]
-    // We use L0,L1,L2,L3 (positions 1,3,5,7) for the 4 groups per lane.
-    // H0-H7 and L4-L7 are all zeroed.
-    const auto X = static_cast<char>(0x80);
-    const __m256i shuf_a = _mm256_setr_epi8(
-        X, 0, X, 4, X, 8, X,12,  X,X, X,X, X,X, X,X,
-        X, 0, X, 4, X, 8, X,12,  X,X, X,X, X,X, X,X);
-    const __m256i shuf_b = _mm256_setr_epi8(
-        X, 1, X, 5, X, 9, X,13,  X,X, X,X, X,X, X,X,
-        X, 1, X, 5, X, 9, X,13,  X,X, X,X, X,X, X,X);
-    const __m256i shuf_c = _mm256_setr_epi8(
-        X, 2, X, 6, X,10, X,14,  X,X, X,X, X,X, X,X,
-        X, 2, X, 6, X,10, X,14,  X,X, X,X, X,X, X,X);
-    const __m256i shuf_d = _mm256_setr_epi8(
-        X, 3, X, 7, X,11, X,15,  X,X, X,X, X,X, X,X,
-        X, 3, X, 7, X,11, X,15,  X,X, X,X, X,X, X,X);
-
-    // Output shuffle: from 16-bit lanes with result in low bytes,
-    // compact 8 bytes (4 per 128-bit lane) into contiguous output.
-    // Low bytes are at positions 1,3,5,7 in each 128-bit lane.
-    const __m256i shuf_out = _mm256_setr_epi8(
-        1, 3, 5, 7,  X,X, X,X, X,X, X,X, X,X, X,X,
-        1, 3, 5, 7,  X,X, X,X, X,X, X,X, X,X, X,X);
-
-    // Process 32 base64 chars at a time → 24 output bytes
-    for (; i + 32 <= src_size; i += 32) {
-        __m256i in = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i));
-
-        // Range checks
-        __m256i is_AZ = _mm256_and_si256(_mm256_cmpgt_epi8(in, vA), _mm256_cmpgt_epi8(vZ, in));
-        __m256i is_az = _mm256_and_si256(_mm256_cmpgt_epi8(in, va), _mm256_cmpgt_epi8(vz, in));
-        __m256i is_09 = _mm256_and_si256(_mm256_cmpgt_epi8(in, v0), _mm256_cmpgt_epi8(v9, in));
-        __m256i is_plus  = _mm256_cmpeq_epi8(in, vplus);
-        __m256i is_slash = _mm256_cmpeq_epi8(in, vslash);
-        __m256i is_eq    = _mm256_cmpeq_epi8(in, veq);
-
-        // Validate
-        __m256i valid = _mm256_or_si256(
-            _mm256_or_si256(_mm256_or_si256(is_AZ, is_az), is_09),
-            _mm256_or_si256(_mm256_or_si256(is_plus, is_slash), is_eq));
-        int invalid_mask = ~_mm256_movemask_epi8(valid) & 0xFFFFFFFF;
-        if (invalid_mask) {
-            result.error = ErrorCode::InvalidChar;
-            result.error_offset = i + ctz32(static_cast<unsigned int>(invalid_mask));
-            return result;
+    // 8x unrolled main loop (same as libbase64)
+    if (src_size >= 45) {
+        size_t rounds = (src_size - 13) / 32;
+        while (rounds >= 8) {
+            if (dec_block(src + i, dst + j) &&
+                dec_block(src + i + 32, dst + j + 24) &&
+                dec_block(src + i + 64, dst + j + 48) &&
+                dec_block(src + i + 96, dst + j + 72) &&
+                dec_block(src + i + 128, dst + j + 96) &&
+                dec_block(src + i + 160, dst + j + 120) &&
+                dec_block(src + i + 192, dst + j + 144) &&
+                dec_block(src + i + 224, dst + j + 168)) {
+                i += 256; j += 192; rounds -= 8; continue;
+            }
+            break;
         }
-
-        // Convert to 6-bit values
-        __m256i decoded = _mm256_or_si256(
-            _mm256_or_si256(
-                _mm256_and_si256(is_AZ, _mm256_add_epi8(in, sub_AZ)),
-                _mm256_and_si256(is_az, _mm256_add_epi8(in, sub_az))
-            ),
-            _mm256_or_si256(
-                _mm256_and_si256(is_09, _mm256_add_epi8(in, sub_09)),
-                _mm256_or_si256(
-                    _mm256_and_si256(is_plus, val_plus),
-                    _mm256_and_si256(is_slash, val_slash)
-                )
-            )
-        );
-
-        // Pack: gather a,b,c,d into 16-bit lanes, shift, mask, combine
-        __m256i a_lo = _mm256_shuffle_epi8(decoded, shuf_a);
-        __m256i b_lo = _mm256_shuffle_epi8(decoded, shuf_b);
-        __m256i c_lo = _mm256_shuffle_epi8(decoded, shuf_c);
-        __m256i d_lo = _mm256_shuffle_epi8(decoded, shuf_d);
-
-        // out0 = (a<<2) | (b>>4)
-        __m256i out0 = _mm256_or_si256(
-            _mm256_slli_epi16(a_lo, 2),
-            _mm256_srli_epi16(b_lo, 4));
-
-        // out1 = ((b&0xF)<<4) | (c>>2)
-        __m256i out1 = _mm256_or_si256(
-            _mm256_slli_epi16(_mm256_and_si256(b_lo, mask_0F), 4),
-            _mm256_srli_epi16(c_lo, 2));
-
-        // out2 = ((c&0x3)<<6) | d
-        __m256i out2 = _mm256_or_si256(
-            _mm256_slli_epi16(_mm256_and_si256(c_lo, mask_03), 6),
-            d_lo);
-
-        // Compact and store: extract the 8 output bytes from each register
-        // (4 per 128-bit lane, at positions 1,3,5,7)
-        __m256i out0c = _mm256_shuffle_epi8(out0, shuf_out);
-        __m256i out1c = _mm256_shuffle_epi8(out1, shuf_out);
-        __m256i out2c = _mm256_shuffle_epi8(out2, shuf_out);
-
-        // Store 8 bytes from each (4 per 128-bit lane)
-        // out0c has bytes at positions 0-3 and 16-19
-        // out1c has bytes at positions 0-3 and 16-19
-        // out2c has bytes at positions 0-3 and 16-19
-        // Total: 24 bytes in order: out0c[0:4], out1c[0:4], out2c[0:4], out0c[16:20], out1c[16:20], out2c[16:20]
-
-        // Extract 128-bit lanes and store
-        __m128i o0_lo = _mm256_extracti128_si256(out0c, 0);
-        __m128i o1_lo = _mm256_extracti128_si256(out1c, 0);
-        __m128i o2_lo = _mm256_extracti128_si256(out2c, 0);
-        __m128i o0_hi = _mm256_extracti128_si256(out0c, 1);
-        __m128i o1_hi = _mm256_extracti128_si256(out1c, 1);
-        __m128i o2_hi = _mm256_extracti128_si256(out2c, 1);
-
-        // Store 4 bytes from each lane segment
-        // First 4 groups (from low 128-bit lanes):
-        _mm_storel_epi64(reinterpret_cast<__m128i*>(dst + j),      o0_lo);  // 4 bytes at positions 0-3
-        _mm_storel_epi64(reinterpret_cast<__m128i*>(dst + j + 4),  o1_lo);
-        _mm_storel_epi64(reinterpret_cast<__m128i*>(dst + j + 8),  o2_lo);
-        // Next 4 groups (from high 128-bit lanes):
-        _mm_storel_epi64(reinterpret_cast<__m128i*>(dst + j + 12), o0_hi);
-        _mm_storel_epi64(reinterpret_cast<__m128i*>(dst + j + 16), o1_hi);
-        _mm_storel_epi64(reinterpret_cast<__m128i*>(dst + j + 20), o2_hi);
-        j += 24;
+        while (rounds >= 4) {
+            if (dec_block(src + i, dst + j) &&
+                dec_block(src + i + 32, dst + j + 24) &&
+                dec_block(src + i + 64, dst + j + 48) &&
+                dec_block(src + i + 96, dst + j + 72)) {
+                i += 128; j += 96; rounds -= 4; continue;
+            }
+            break;
+        }
+        while (rounds >= 2) {
+            if (dec_block(src + i, dst + j) &&
+                dec_block(src + i + 32, dst + j + 24)) {
+                i += 64; j += 48; rounds -= 2; continue;
+            }
+            break;
+        }
+        if (rounds >= 1) {
+            if (dec_block(src + i, dst + j)) {
+                i += 32; j += 24; rounds--;
+            }
+        }
+        // Adjust for skipped rounds
+        (void)rounds;
     }
 
-    // Scalar tail
+    // Scalar tail with LUT
     static constexpr uint8_t b64_table[256] = {
         64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
         64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
@@ -732,23 +607,29 @@ DecodeResult base64_decode_avx2(const uint8_t* src, size_t src_size, uint8_t* ds
         64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
     };
 
-    for (; i < src_size; i += 4) {
+    for (; i + 3 < src_size; i += 4) {
         const uint8_t a = b64_table[src[i]];
         const uint8_t b = b64_table[src[i+1]];
-        const uint8_t c = b64_table[src[i+2]];
-        const uint8_t d = b64_table[src[i+3]];
         if (a == 64 || b == 64) {
             result.error = ErrorCode::InvalidChar;
             result.error_offset = (a == 64) ? i : i + 1;
             return result;
         }
         uint32_t n = (static_cast<uint32_t>(a) << 18) |
-                     (static_cast<uint32_t>(b) << 12) |
-                     (static_cast<uint32_t>(c) << 6) |
-                     static_cast<uint32_t>(d);
-        if (src[i+2] != '=') dst[j++] = static_cast<uint8_t>((n >> 16) & 0xFF);
-        if (src[i+2] != '=' && src[i+3] != '=') dst[j++] = static_cast<uint8_t>((n >> 8) & 0xFF);
-        if (src[i+3] != '=') dst[j++] = static_cast<uint8_t>(n & 0xFF);
+                     (static_cast<uint32_t>(b) << 12);
+        if (src[i+2] != '=') {
+            const uint8_t c = b64_table[src[i+2]];
+            if (c == 64) { result.error = ErrorCode::InvalidChar; result.error_offset = i+2; return result; }
+            n |= static_cast<uint32_t>(c) << 6;
+            dst[j++] = static_cast<uint8_t>((n >> 16) & 0xFF);
+        }
+        if (src[i+3] != '=') {
+            const uint8_t d = b64_table[src[i+3]];
+            if (d == 64) { result.error = ErrorCode::InvalidChar; result.error_offset = i+3; return result; }
+            n |= static_cast<uint32_t>(d);
+            dst[j++] = static_cast<uint8_t>((n >> 8) & 0xFF);
+            dst[j++] = static_cast<uint8_t>(n & 0xFF);
+        }
     }
 
     result.bytes_written = j;
