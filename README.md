@@ -341,15 +341,15 @@ cmake --build build
 
 | Operation | Throughput | Notes |
 |-----------|-----------|-------|
-| `valid_utf8` | 104.1 GB/s | AVX2 via Highway |
-| `is_ascii` | 103.6 GB/s | AVX2 via Highway |
+| `valid_utf8` | 161.5 GB/s | AVX2 two-phase (ASCII fast path + detailed) |
+| `is_ascii` | 185.1 GB/s | AVX2 vptest |
 | `lowercase`/`uppercase` | ~18 GB/s | AVX2, 4× unrolled + prefetch |
 | `hex_encode` | 17.2 GB/s | SSSE3/AVX2 SIMD |
 | `hex_decode` | 12.3 GB/s | AVX2 maddubs + packus_epi16 |
 | `base64_encode` | 21.5 GB/s | AVX2 mulhi/mullo reshuffle |
 | `count_byte` | 12.3 GB/s | AVX2, 4× unrolled |
 | `lines` | ~10 GB/s | SIMD-accelerated |
-| `base64_decode` | 3.61 GB/s | AVX2 SIMD |
+| `base64_decode` | 23.5 GB/s | AVX2 aqrit + delta-rolling + 8× unroll |
 | `url_decode` | 1.55 GB/s | Highway SIMD, consecutive %XX |
 | `url_encode` | 1.14 GB/s | LUT classification |
 
@@ -380,9 +380,9 @@ A major round of SIMD optimizations across nearly every operation:
 | `hex_encode` | 1.16 GB/s | 15–17 GB/s | **14×** |
 | `hex_decode` | 2.24 GB/s | 13–14 GB/s | **6×** |
 | `base64_encode` | 1.56 GB/s | 10+ GB/s | **7×** |
-| `base64_decode` | 2.41 GB/s | 3.61 GB/s | **50%** |
-| `url_encode` | 257 MB/s | 1.1 GB/s | **4.2×** |
-| `url_decode` | 859 MB/s | 1.2 GB/s | **41%** |
+| `base64_decode` | 2.41 GB/s | 23.5 GB/s | **9.8×** |
+| `url_encode` | 257 MB/s | 1.14 GB/s | **4.4×** |
+| `url_decode` | 859 MB/s | 1.55 GB/s | **1.8×** |
 | `lowercase`/`uppercase` | 16.2 GB/s | ~28 GB/s | **1.7×** |
 | `lines`/`split` | 5.1 GB/s | ~10 GB/s | **2×** |
 
