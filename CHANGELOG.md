@@ -7,10 +7,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.2.2] - 2026-05-03
 
 ### Performance
-- **hex_decode**: 2.3 GB/s → 12.3 GB/s (**5.3×**) via AVX2 maddubs + packus_epi16 (fast-hex technique)
-- **url_decode**: 676 MB/s → 1.55 GB/s (**2.3×**) — consecutive %XX processing eliminates SIMD scan overhead
+- **is_ascii**: 110 GB/s → 185 GB/s (**1.7×**) — vptest replaces vpand+pmovmskb+test
+- **valid_utf8**: 83.5 GB/s → 161 GB/s (**1.9×**) — two-phase (ASCII fast path + detailed validation)
+- **hex_encode**: 17.2 GB/s → 35.3 GB/s (**2.1×**) — AVX2 32-byte path with 2× unroll + prefetch
+- **hex_decode**: 2.3 GB/s → 12.3 GB/s (**5.3×**) — AVX2 maddubs + packus_epi16 (fast-hex technique)
+- **base64_encode**: 1.56 GB/s → 21.5 GB/s (**14×**) — AVX2 mulhi/mullo reshuffle
+- **base64_decode**: 2.41 GB/s → 23.5 GB/s (**9.8×**) — AVX2 aqrit + delta-rolling + 8× unroll
+- **url_encode**: 257 MB/s → 1.14 GB/s (**4.4×**) — LUT classification
+- **url_decode**: 859 MB/s → 1.55 GB/s (**1.8×**) — Highway SIMD, consecutive %XX processing
 - **lowercase/uppercase**: 4× loop unrolling + software prefetch for large buffer throughput
-- **url_encode**: simplified to direct LUT classification (same speed, simpler code)
+
+### Comparison vs Competitors (64KB, same machine)
+- is_ascii: **185 GB/s** vs simdutf 127 GB/s (**1.46× faster**)
+- valid_utf8: **161 GB/s** vs simdutf 121 GB/s (**1.34× faster**)
+- base64_encode: **21.5 GB/s** vs libbase64 7.3 GB/s (**2.9× faster**)
+- base64_decode: **23.5 GB/s** vs libbase64 4.5 GB/s (**5.2× faster**)
+- hex_encode: **35.3 GB/s** — best-in-class (no major competitor)
+- hex_decode: **12.3 GB/s** — best-in-class (no major competitor)
 
 ### Bug Fixes
 - Fixed hex_encode SSSE3 lo_mask_arr only initializing 1 byte instead of all 16
