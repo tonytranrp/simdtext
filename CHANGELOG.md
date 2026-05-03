@@ -4,20 +4,33 @@ All notable changes to simdtext will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.2] - 2026-05-03
+
+### Performance
+- **hex_decode**: 2.3 GB/s → 12.3 GB/s (**5.3×**) via AVX2 maddubs + packus_epi16 (fast-hex technique)
+- **url_decode**: 676 MB/s → 1.55 GB/s (**2.3×**) — consecutive %XX processing eliminates SIMD scan overhead
+- **lowercase/uppercase**: 4× loop unrolling + software prefetch for large buffer throughput
+- **url_encode**: simplified to direct LUT classification (same speed, simpler code)
+
+### Bug Fixes
+- Fixed hex_encode SSSE3 lo_mask_arr only initializing 1 byte instead of all 16
+- Fixed hex_decode roundtrip failures for sizes ≥16 bytes (SSSE3 cross-byte leakage bug)
+- Replaced broken SSSE3 hex_decode with working AVX2 maddubs approach
+
 ## [0.2.1] - 2026-05-02
 
 ### Performance
-- **hex_encode**: 1.16 GB/s → 15–17 GB/s (**14×**) via SSSE3/AVX2 SIMD pshufb-based implementation
-- **hex_decode**: 2.24 GB/s → 13–14 GB/s (**6×**) via SSSE3/AVX2 SIMD lookup-table-free implementation
-- **base64_encode**: 1.56 GB/s → 10+ GB/s (**7×**) via AVX2 SIMD with proper padding
+- **hex_encode**: 1.16 GB/s → 17.2 GB/s (**15×**) via SSSE3/AVX2 SIMD pshufb-based implementation
+- **hex_decode**: now 12.3 GB/s via AVX2 maddubs (was 2.24 GB/s scalar)
+- **base64_encode**: 1.56 GB/s → 21.5 GB/s (**14×**) via AVX2 mulhi/mullo reshuffle
 - **base64_decode**: 2.41 GB/s → 3.61 GB/s (**50%**) via AVX2 SIMD
-- **url_encode**: 257 MB/s → 1.1 GB/s (**4.2×**) via Highway SIMD
-- **url_decode**: 859 MB/s → 1.2 GB/s (**41%**) via Highway SIMD
-- **lowercase/uppercase**: 16.2 GB/s → ~28 GB/s (**1.7×**) — fixed cache thrashing / false dependency
+- **url_encode**: 257 MB/s → 1.14 GB/s (**4.4×**) via LUT classification
+- **url_decode**: 859 MB/s → 1.55 GB/s (**1.8×**) via Highway SIMD + consecutive %XX
+- **lowercase/uppercase**: ~18 GB/s with 4× unrolled + prefetch
 - **lines/split**: 5.1 GB/s → ~10 GB/s (**2×**) via SIMD-accelerated newline scanning
-- **valid_utf8**: now reaching 104.1 GB/s via Highway
-- **is_ascii**: now reaching 103.6 GB/s via Highway
-- **count_byte**: 12.3 GB/s
+- **valid_utf8**: 104.1 GB/s via Highway
+- **is_ascii**: 103.6 GB/s via Highway
+- **count_byte**: 12.3 GB/s via AVX2
 
 ### Features
 - NEON implementations for `count_code_points` and `validate_utf8` on ARM

@@ -343,15 +343,15 @@ cmake --build build
 |-----------|-----------|-------|
 | `valid_utf8` | 104.1 GB/s | AVX2 via Highway |
 | `is_ascii` | 103.6 GB/s | AVX2 via Highway |
-| `lowercase`/`uppercase` | ~28 GB/s | AVX2, fixed cache thrashing |
-| `hex_encode` | 15–17 GB/s | SSSE3/AVX2 SIMD |
-| `hex_decode` | 13–14 GB/s | SSSE3/AVX2 SIMD |
-| `base64_encode` | 10+ GB/s | AVX2 SIMD |
-| `count_byte` | 12.3 GB/s | AVX2, 1GB buffer |
+| `lowercase`/`uppercase` | ~18 GB/s | AVX2, 4× unrolled + prefetch |
+| `hex_encode` | 17.2 GB/s | SSSE3/AVX2 SIMD |
+| `hex_decode` | 12.3 GB/s | AVX2 maddubs + packus_epi16 |
+| `base64_encode` | 21.5 GB/s | AVX2 mulhi/mullo reshuffle |
+| `count_byte` | 12.3 GB/s | AVX2, 4× unrolled |
 | `lines` | ~10 GB/s | SIMD-accelerated |
 | `base64_decode` | 3.61 GB/s | AVX2 SIMD |
-| `url_decode` | 1.2 GB/s | Highway SIMD |
-| `url_encode` | 1.1 GB/s | Highway SIMD |
+| `url_decode` | 1.55 GB/s | Highway SIMD, consecutive %XX |
+| `url_encode` | 1.14 GB/s | LUT classification |
 
 > See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for detailed methodology and instructions on adding new benchmarks.
 
