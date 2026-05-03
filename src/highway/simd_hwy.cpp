@@ -457,12 +457,13 @@ size_t count_newlines(std::span<const char> input) {
     return count_byte(input, '\n');
 }
 
-bool is_ascii(std::span<const char> input) {
-    if (input.empty()) return true;
-    const auto* ptr = reinterpret_cast<const uint8_t*>(input.data());
-    const hn::ScalableTag<uint8_t> d;
-    return is_ascii_vec(d, ptr, input.size());
-}
+// is_ascii removed — dispatch is in scalar.cpp, AVX2 impl is in simd_avx2.cpp
+// bool is_ascii(std::span<const char> input) {
+//     if (input.empty()) return true;
+//     const auto* ptr = reinterpret_cast<const uint8_t*>(input.data());
+//     const hn::ScalableTag<uint8_t> d;
+//     return is_ascii_vec(d, ptr, input.size());
+// }
 
 void lowercase_ascii_inplace(std::span<char> input) {
     if (input.empty()) return;
@@ -486,12 +487,13 @@ const char* find_byte(std::span<const char> input, char byte) {
     return find_byte_vec(d, ptr, size, static_cast<uint8_t>(byte), input.data());
 }
 
-bool valid_utf8(std::span<const char> input) {
-    if (input.empty()) return true;
-    const auto* ptr = reinterpret_cast<const uint8_t*>(input.data());
-    const hn::ScalableTag<uint8_t> d;
-    return validate_utf8_vec(d, ptr, input.size());
-}
+// valid_utf8 removed — dispatch is in scalar.cpp, AVX2 impl is in simd_avx2.cpp
+// bool valid_utf8(std::span<const char> input) {
+//     if (input.empty()) return true;
+//     const auto* ptr = reinterpret_cast<const uint8_t*>(input.data());
+//     const hn::ScalableTag<uint8_t> d;
+//     return validate_utf8_vec(d, ptr, input.size());
+// }
 
 // ── SIMD Hex Encode ─────────────────────────────────────────────
 // Uses TableLookupBytes (pshufb) for nibble→hex lookup.
@@ -660,6 +662,75 @@ std::string url_encode_hwy(const uint8_t* src, size_t src_size) {
 #if defined(__GNUC__) && defined(__x86_64__)
 __attribute__((target("ssse3")))
 #endif
+#if defined(__x86_64__) || defined(_M_X64)
+// AVX2 hex_encode: 32 bytes → 64 hex chars per iteration with prefetch
+__attribute__((target("avx2,ssse3")))
+static size_t hex_encode_avx2(const uint8_t* src, size_t src_size, char* dst) {
+    alignas(32) static const uint8_t hex_lut[32] = {
+        '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f',
+        '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'
+    };
+    static constexpr char hex_chars[16] = {
+        '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'
+    };
+
+    const __m256i lut = _mm256_load_si256(reinterpret_cast<const __m256i*>(hex_lut));
+    const __m256i v0F = _mm256_set1_epi8(0x0F);
+    const __m128i lut16 = _mm_load_si128(reinterpret_cast<const __m128i*>(hex_lut));
+    const __m128i v0F16 = _mm_set1_epi8(0x0F);
+
+    size_t i = 0;
+    // 2x unrolled AVX2 with prefetch
+    for (; i + 64 <= src_size; i += 64) {
+        _mm_prefetch(src + i + 384, _MM_HINT_T0);
+        _mm_prefetch(src + i + 384 + 64, _MM_HINT_T0);
+        const __m256i v0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i));
+        const __m256i v1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i + 32));
+        const __m256i lo0 = _mm256_and_si256(v0, v0F);
+        const __m256i hi0 = _mm256_and_si256(_mm256_srli_epi16(v0, 4), v0F);
+        const __m256i lo1 = _mm256_and_si256(v1, v0F);
+        const __m256i hi1 = _mm256_and_si256(_mm256_srli_epi16(v1, 4), v0F);
+        const __m256i lo0h = _mm256_shuffle_epi8(lut, lo0);
+        const __m256i hi0h = _mm256_shuffle_epi8(lut, hi0);
+        const __m256i lo1h = _mm256_shuffle_epi8(lut, lo1);
+        const __m256i hi1h = _mm256_shuffle_epi8(lut, hi1);
+        const __m256i o0lo = _mm256_unpacklo_epi8(hi0h, lo0h);
+        const __m256i o0hi = _mm256_unpackhi_epi8(hi0h, lo0h);
+        const __m256i o1lo = _mm256_unpacklo_epi8(hi1h, lo1h);
+        const __m256i o1hi = _mm256_unpackhi_epi8(hi1h, lo1h);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i * 2), o0lo);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i * 2 + 32), o0hi);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i * 2 + 64), o1lo);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i * 2 + 96), o1hi);
+    }
+    for (; i + 32 <= src_size; i += 32) {
+        const __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i));
+        const __m256i lo = _mm256_and_si256(v, v0F);
+        const __m256i hi = _mm256_and_si256(_mm256_srli_epi16(v, 4), v0F);
+        const __m256i loh = _mm256_shuffle_epi8(lut, lo);
+        const __m256i hih = _mm256_shuffle_epi8(lut, hi);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i * 2), _mm256_unpacklo_epi8(hih, loh));
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i * 2 + 32), _mm256_unpackhi_epi8(hih, loh));
+    }
+    // SSSE3 16-byte tail
+    for (; i + 16 <= src_size; i += 16) {
+        __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i));
+        __m128i lo = _mm_and_si128(v, v0F16);
+        __m128i hi = _mm_and_si128(_mm_srli_epi16(v, 4), v0F16);
+        __m128i loh = _mm_shuffle_epi8(lut16, lo);
+        __m128i hih = _mm_shuffle_epi8(lut16, hi);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i * 2), _mm_unpacklo_epi8(hih, loh));
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i * 2 + 16), _mm_unpackhi_epi8(hih, loh));
+    }
+    for (; i < src_size; ++i) {
+        dst[i * 2]     = hex_chars[src[i] >> 4];
+        dst[i * 2 + 1] = hex_chars[src[i] & 0x0F];
+    }
+    return src_size * 2;
+}
+#endif
+
+__attribute__((target("ssse3")))
 static size_t hex_encode_ssse3(const uint8_t* src, size_t src_size, char* dst) {
     alignas(16) static const uint8_t hex_lut[16] = {
         '0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'
@@ -706,7 +777,9 @@ size_t hex_encode_simd(const uint8_t* src, size_t src_size, char* dst) {
     };
 
 #if defined(__x86_64__) && defined(__GNUC__)
-    // Runtime dispatch: SSSE3 is available on all x86-64 CPUs since ~2008
+    if (__builtin_cpu_supports("avx2")) {
+        return hex_encode_avx2(src, src_size, dst);
+    }
     if (__builtin_cpu_supports("ssse3")) {
         return hex_encode_ssse3(src, src_size, dst);
     }
