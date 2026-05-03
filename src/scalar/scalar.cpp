@@ -31,9 +31,21 @@ const char* find_byte(const char* data, size_t size, char byte);
 }
 } // namespace detail
 
+// is_ascii and valid_utf8 always dispatch through AVX2/SSE2 intrinsics.
+// Even when Highway is available, native AVX2 intrinsics use 32-byte YMM registers
+// vs Highway's 16-byte XMM (Highway only compiles for SSE2 target in this build).
+
+bool is_ascii(std::span<const char> input) {
+    if (input.empty()) return true;
+    const auto& f = detail::detect_cpu();
+    if (f.avx2)    return detail::avx2::is_ascii(input.data(), input.size());
+    if (f.sse2)    return detail::sse2::is_ascii(input.data(), input.size());
+    return detail::scalar::is_ascii(input.data(), input.size());
+}
+
 #ifndef SIMDTEXT_HAVE_HWY
-// When Highway is available, these functions are provided by simd_hwy.cpp
-// which uses Highway's portable SIMD for better performance.
+// When Highway is available, count_byte/lowercase/uppercase/find_byte are provided
+// by simd_hwy.cpp which uses Highway's portable SIMD.
 
 size_t count_byte(std::span<const char> input, char byte) {
     if (input.empty()) return 0;
@@ -199,12 +211,10 @@ SplitView split(std::string_view input, char delimiter) {
 
 // ── UTF-8 ──────────────────────────────────────────────────
 
-#ifndef SIMDTEXT_HAVE_HWY
 bool valid_utf8(std::span<const char> input) {
     if (input.empty()) return true;
     return detail::validate_utf8_dispatch(input.data(), input.size());
 }
-#endif // SIMDTEXT_HAVE_HWY
 
 bool Utf8Validator::validate(std::string_view chunk) noexcept {
     for (char c : chunk) {
